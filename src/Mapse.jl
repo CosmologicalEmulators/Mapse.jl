@@ -39,6 +39,7 @@ end
 
 Adapt.@adapt_structure LinearPkEmulator
 
+#before uncommenting this, I need to have a first trained emulator and see how it works
 #"""
 #    get_Cℓ(input_params, Cℓemu::AbstractCℓEmulators)
 #Computes and returns the ``C_\\ell``'s on the ``\\ell``-grid the emulator has been trained on given input array `input_params`.
