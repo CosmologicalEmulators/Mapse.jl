@@ -39,14 +39,6 @@ x1 = vcat([0.], sort(rand(n-2)), [1.])
 x2 = 2 .* vcat([0.], sort(rand(n-2)), [1.])
 y = rand(n)
 
-W = rand(2, 20, 3, 10)
-v = rand(20, 10)
-
-function di_spline(y,x,xn)
-    spline = QuadraticSpline(y,x; extrapolation = ExtrapolationType.Extension)
-    return spline.(xn)
-end
-
 function D_z_x(z, x)
     Ωcb0, h, mν, w0, wa = x
     sum(Mapse._D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
@@ -55,16 +47,6 @@ end
 function f_z_x(z, x)
     Ωcb0, h, mν, w0, wa = x
     sum(Mapse._f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
-end
-
-function r_z_x(z, x)
-    Ωcb0, h, mν, w0, wa = x
-    sum(Mapse._r_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
-end
-
-function r_z_check_x(z, x)
-    Ωcb0, h, mν, w0, wa = x
-    sum(Mapse._r_z_check(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
 end
 
 myx = Array(LinRange(0., 1., 100))
@@ -85,8 +67,6 @@ x3 = Array(LinRange(-1., 1., 100))
     #@test isapprox(grad(central_fdm(5,1), x->r_z_x(3., x), x)[1], ForwardDiff.gradient(x->r_z_x(3., x), x), rtol=1e-7)
     #@test isapprox(Zygote.gradient(x->r_z_x(3., x), x)[1], ForwardDiff.gradient(x->r_z_x(3., x), x), rtol=1e-6)
     #@test isapprox(Zygote.gradient(x->r_z_x(3., x), x)[1], Zygote.gradient(x->r_z_check_x(3., x), x)[1], rtol=1e-7)
-    @test isapprox(Mapse._r_z(3., Ωcb0, h; mν =mν, w0=w0, wa=wa), Mapse._r_z_check(3., Ωcb0, h; mν =mν, w0=w0, wa=wa), rtol=1e-6)
-    @test isapprox(Mapse._r_z(10., 0.14/0.67^2, 0.67; mν =0.4, w0=-1.9, wa=0.7), 10161.232807937273, rtol=2e-4)
     D, f = Mapse._D_f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa)
     @test isapprox(D, Mapse._D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
     @test isapprox(f, Mapse._f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))

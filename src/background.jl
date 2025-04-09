@@ -110,57 +110,6 @@ function _Ωma(a, w0wacosmo::w0waCDMCosmology)
     return _Ωma(a, Ωcb0, w0wacosmo.h; mν=w0wacosmo.mν, w0=w0wacosmo.w0, wa=w0wacosmo.wa)
 end
 
-function _r̃_z_check(z, Ωcb0, h; mν=0.0, w0=-1.0, wa=0.0)
-    p = [Ωcb0, h, mν, w0, wa]
-    f(x, p) = 1 / _E_a(_a_z(x), p[1], p[2]; mν=p[3], w0=p[4], wa=p[5])
-    domain = (zero(eltype(z)), z) # (lb, ub)
-    prob = IntegralProblem(f, domain, p; reltol=1e-12)
-    sol = solve(prob, QuadGKJL())[1]
-    return sol
-end
-
-function _r̃_z(z, Ωcb0, h; mν=0.0, w0=-1.0, wa=0.0)
-    z_array, weigths_array = _transformed_weights(FastGaussQuadrature.gausslegendre, 9, 0, z)
-    integrand_array = 1.0 ./ _E_a(_a_z(z_array), Ωcb0, h; mν=mν, w0=w0, wa=wa)
-    return dot(weigths_array, integrand_array)
-end
-
-function _r̃_z(z, w0wacosmo::w0waCDMCosmology)
-    Ωcb0 = (w0wacosmo.ωb+w0wacosmo.ωc)/w0wacosmo.h^2
-    return _r̃_z(z, Ωcb0, w0wacosmo.h; mν=w0wacosmo.mν, w0=w0wacosmo.w0, wa=w0wacosmo.wa)
-end
-
-function _r_z_check(z, Ωcb0, h; mν=0.0, w0=-1.0, wa=0.0)
-    return c_0 * _r̃_z_check(z, Ωcb0, h; mν=mν, w0=w0, wa=wa) / (100 * h)
-end
-
-function _r_z(z, Ωcb0, h; mν=0.0, w0=-1.0, wa=0.0)
-    return c_0 * _r̃_z(z, Ωcb0, h; mν=mν, w0=w0, wa=wa) / (100 * h)
-end
-
-function _r_z(z, w0wacosmo::w0waCDMCosmology)
-    Ωcb0 = (w0wacosmo.ωb+w0wacosmo.ωc)/w0wacosmo.h^2
-    return _r_z(z, Ωcb0, w0wacosmo.h; mν=w0wacosmo.mν, w0=w0wacosmo.w0, wa=w0wacosmo.wa)
-end
-
-function _d̃A_z(z, Ωcb0, h; mν=0.0, w0=-1.0, wa=0.0)
-    return _r̃_z(z, Ωcb0, h; mν=mν, w0=w0, wa=wa) / (1 + z)
-end
-
-function _d̃A_z(z, w0wacosmo::w0waCDMCosmology)
-    Ωcb0 = (w0wacosmo.ωb+w0wacosmo.ωc)/w0wacosmo.h^2
-    return _d̃A_z(z, Ωcb0, w0wacosmo.h; mν=w0wacosmo.mν, w0=w0wacosmo.w0, wa=w0wacosmo.wa)
-end
-
-function _dA_z(z, Ωcb0, h; mν=0.0, w0=-1.0, wa=0.0)
-    return _r_z(z, Ωcb0, h; mν=mν, w0=w0, wa=wa) / (1 + z)
-end
-
-function _dA_z(z, w0wacosmo::w0waCDMCosmology)
-    Ωcb0 = (w0wacosmo.ωb+w0wacosmo.ωc)/w0wacosmo.h^2
-    return _dA_z(z, Ωcb0, w0wacosmo.h; mν=w0wacosmo.mν, w0=w0wacosmo.w0, wa=w0wacosmo.wa)
-end
-
 function _ρDE_z(z, w0, wa)
     return (1 + z)^(3.0 * (1.0 + w0 + wa)) * exp(-3.0 * wa * z / (1 + z))
 end
