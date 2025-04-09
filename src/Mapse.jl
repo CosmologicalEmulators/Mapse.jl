@@ -25,5 +25,6 @@ end
 
 include("background.jl")
 include("neural_networks.jl")
+include("primordial.jl")
 
 end # module
