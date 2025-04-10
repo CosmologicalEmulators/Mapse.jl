@@ -42,7 +42,7 @@ Pk_emu = Capse.load_emulator(weights_folder, emu = Mapse.LuxEmulator);
 
 Each trained emulator should be shipped with a description within the JSON file. In order to print the description, just run:
 
-```@example tutorial
+```julia
 Mapse.get_emulator_description(Pk_emu)
 ```
 
