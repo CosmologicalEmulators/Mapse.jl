@@ -95,7 +95,7 @@ function load_emulator(path::String; emu = SimpleChainsEmulator,
     z = npzread(path*z_file)
 
     weights = npzread(path*weights_file)
-    trained_emu = Capse.init_emulator(NN_dict, weights, emu)
+    trained_emu = Mapse.init_emulator(NN_dict, weights, emu)
     Pk_emu = Mapse.LinearPkEmulator(TrainedEmulator = trained_emu, kgrid = k, zgrid = z,
                              InMinMax = npzread(path*inminmax_file),
                              OutMinMax = npzread(path*outminmax_file),
