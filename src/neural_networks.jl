@@ -30,18 +30,19 @@ end
 
 Adapt.@adapt_structure LinearPkEmulator
 
-#before uncommenting this, I need to have a first trained emulator and see how it works
-#"""
-#    get_Cℓ(input_params, Cℓemu::AbstractCℓEmulators)
-#Computes and returns the ``C_\\ell``'s on the ``\\ell``-grid the emulator has been trained on given input array `input_params`.
 
-#"""
-#function get_Pk(input_params, Cℓemu::AbstractCℓEmulators)
-#    norm_input = maximin(input_params, Cℓemu.InMinMax)
-#    output = Array(run_emulator(norm_input, Cℓemu.TrainedEmulator))
-#    norm_output = inv_maximin(output, Cℓemu.OutMinMax)
-#    return Cℓemu.Postprocessing(input_params, norm_output, Cℓemu)
-#end
+"""
+    getPk(input_params, Pkemu::LinearPkEmulator)
+Computes and returns the linear power spectrum on the ``k-z`` grid the emulator has been trained on, given input array `input_params`.
+
+"""
+function get_Pk(input_params, Pkprep, LinPkemu::LinearPkEmulator)
+    norm_input = maximin(input_params, LinPkemu.InMinMax)
+    output = Array(run_emulator(norm_input, LinPkemu.TrainedEmulator))
+    norm_output = reshape(inv_maximin(output, LinPkemu.OutMinMax), length(LinPkemu.kgrid), length(LinPkemu.zgrid))
+
+    return LinPkemu.Postprocessing(input_params, norm_output, Pkprep, LinPkemu)
+end
 
 """
     get_kgrid(PkEmulator::AbstractCℓEmulators)
