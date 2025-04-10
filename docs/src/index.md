@@ -1,4 +1,4 @@
-# Capse.jl
+# Mapse.jl
 
 `Mapse.jl` is a Julia package designed to emulate the computation of the Linear and Nonlinear Matter Power Spectrum, with a speedup of several orders of magnitude compared to standard codes such as `CAMB` or `CLASS`. The core functionalities of `Mapse.jl` are inherithed by the upstream library [`AbstractCosmologicalEmulators.jl`](https://github.com/CosmologicalEmulators/AbstractCosmologicalEmulators.jl).
 
