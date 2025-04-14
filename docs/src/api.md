@@ -4,7 +4,6 @@
 Mapse.LinearPkEmulator
 Mapse.get_Pk
 Mapse.get_kgrid
-Mapse.get_zgrid
 Mapse.get_emulator_description
 Mapse.load_emulator
 ```
