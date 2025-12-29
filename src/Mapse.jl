@@ -9,21 +9,25 @@ import JSON.parsefile
 import NPZ.npzread
 using OrdinaryDiffEqTsit5
 using Integrals
+using FastGaussQuadrature
+using LinearAlgebra
+using SciMLSensitivity
 
 const c_0 = 2.99792458e5
 
-function __init__()
-    min_y = _get_y(0,0) #obvious, I knowadd OrdinaryDiffEqTsit5
-    max_y = _get_y(1,10)
-    y_grid = vcat(LinRange(min_y, 100, 100), LinRange(100.1, max_y, 1000))
-    F_grid = [_F(y) for y in y_grid]
-    global F_interpolant = AkimaInterpolation(F_grid, y_grid)
-    y_grid = vcat(LinRange(min_y, 10., 10000), LinRange(10.1, max_y, 10000))
-    dFdy_grid = [_dFdy(y) for y in y_grid]
-    global dFdy_interpolant = AkimaInterpolation(dFdy_grid, y_grid)
+# Get the BackgroundCosmologyExt extension
+const ext = Base.get_extension(AbstractCosmologicalEmulators, :BackgroundCosmologyExt)
+
+# Import from extension if available
+if !isnothing(ext)
+    using .ext: AbstractCosmology, w0waCDMCosmology, D_z, D_f_z, f_z, E_z, E_a, d̃A_z, dM_z, dA_z, dL_z, r_z
+    # Re-export background cosmology functions for user convenience
+    export AbstractCosmology, w0waCDMCosmology, D_z, D_f_z, f_z, E_z, E_a, d̃A_z, dM_z, dA_z, dL_z, r_z
+else
+    @warn "BackgroundCosmologyExt extension not loaded. Background cosmology functions will not be available."
 end
 
-include("background.jl")
+
 include("neural_networks.jl")
 include("primordial.jl")
 

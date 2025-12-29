@@ -41,12 +41,12 @@ y = rand(n)
 
 function D_z_x(z, x)
     Ωcb0, h, mν, w0, wa = x
-    sum(Mapse._D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
+    sum(Mapse.D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
 end
 
 function f_z_x(z, x)
     Ωcb0, h, mν, w0, wa = x
-    sum(Mapse._f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
+    sum(Mapse.f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
 end
 
 myx = Array(LinRange(0., 1., 100))
@@ -59,7 +59,7 @@ q_perp = 0.6
 x3 = Array(LinRange(-1., 1., 100))
 
 @testset "Mapse tests" begin
-    @test isapprox(Mapse._E_a(1, Ωcb0, h), 1.)
+    @test isapprox(Mapse.E_a(1, Ωcb0, h), 1.)
     #@test isapprox(Zygote.gradient(x->D_z_x(z, x), x)[1], ForwardDiff.gradient(x->D_z_x(z, x), x), rtol=1e-5)
     #@test isapprox(grad(central_fdm(5,1), x->D_z_x(z, x), x)[1], ForwardDiff.gradient(x->D_z_x(z, x), x), rtol=1e-3)
     #@test isapprox(Zygote.gradient(x->f_z_x(z, x), x)[1], ForwardDiff.gradient(x->f_z_x(z, x), x), rtol=1e-5)
@@ -67,11 +67,11 @@ x3 = Array(LinRange(-1., 1., 100))
     #@test isapprox(grad(central_fdm(5,1), x->r_z_x(3., x), x)[1], ForwardDiff.gradient(x->r_z_x(3., x), x), rtol=1e-7)
     #@test isapprox(Zygote.gradient(x->r_z_x(3., x), x)[1], ForwardDiff.gradient(x->r_z_x(3., x), x), rtol=1e-6)
     #@test isapprox(Zygote.gradient(x->r_z_x(3., x), x)[1], Zygote.gradient(x->r_z_check_x(3., x), x)[1], rtol=1e-7)
-    D, f = Mapse._D_f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa)
-    @test isapprox(D, Mapse._D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
-    @test isapprox(f, Mapse._f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
-    @test isapprox([Mapse._f_z(myz, Ωcb0, h; mν =mν, w0=w0, wa=wa) for myz in z],  Mapse._f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa), rtol=1e-10)
-    @test isapprox([Mapse._D_z(myz, Ωcb0, h; mν =mν, w0=w0, wa=wa) for myz in z],  Mapse._D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa), rtol=1e-10)
+    D, f = Mapse.D_f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa)
+    @test isapprox(D, Mapse.D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
+    @test isapprox(f, Mapse.f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
+    @test isapprox([Mapse.f_z(myz, Ωcb0, h; mν =mν, w0=w0, wa=wa) for myz in z],  Mapse.f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa), rtol=1e-10)
+    @test isapprox([Mapse.D_z(myz, Ωcb0, h; mν =mν, w0=w0, wa=wa) for myz in z],  Mapse.D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa), rtol=1e-10)
     mycosmo = Mapse.w0waCDMCosmology(ln10Aₛ=3., nₛ=0.96, h=0.636, ωb=0.02237, ωc = 0.1, mν=0.06, w0=-2., wa=1.)
     mycosmo_ref = Mapse.w0waCDMCosmology(ln10Aₛ=3., nₛ=0.96, h=0.6736, ωb=0.02237, ωc = 0.12, mν=0.06, w0=-1., wa=0.)
 end
