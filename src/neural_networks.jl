@@ -15,6 +15,8 @@ It contains:
 
 - `OutMinMax::AbstractMatrix`, the `Matrix` used for the MinMax normalization of the output features
 
+- `Preprocessing::Function`, the `Function` used for the preprocessing of the input features
+
 - `Postprocessing::Function`, the `Function` used for the postprocessing of the NN output
 """
 @kwdef mutable struct LinearPkEmulator <: AbstractPkEmulators
@@ -22,6 +24,7 @@ It contains:
     kgrid::AbstractVector
     InMinMax::AbstractMatrix
     OutMinMax::AbstractMatrix
+    Preprocessing::Function
     Postprocessing::Function
 end
 
@@ -34,7 +37,8 @@ Computes and returns the linear power spectrum on the ``k``-grid the emulator ha
 
 """
 function get_Pk(input_params, z::Number, D::Number, LinPkemu::LinearPkEmulator)
-    input = vcat(input_params, z)
+    preprocessed_input = LinPkemu.Preprocessing(input_params)
+    input = vcat(preprocessed_input, z)
     norm_input = maximin(input, LinPkemu.InMinMax)
     output = Array(run_emulator(norm_input, LinPkemu.TrainedEmulator))
     norm_output = inv_maximin(output, LinPkemu.OutMinMax)
@@ -42,7 +46,8 @@ function get_Pk(input_params, z::Number, D::Number, LinPkemu::LinearPkEmulator)
 end
 
 function get_Pk(input_params, z::AbstractVector, D::AbstractVector, LinPkemu::LinearPkEmulator)
-    input = reduce(hcat, [vcat(input_params, zi) for zi in z])
+    preprocessed_input = LinPkemu.Preprocessing(input_params)
+    input = reduce(hcat, [vcat(preprocessed_input, zi) for zi in z])
     norm_input = maximin(input, LinPkemu.InMinMax)
     output = Array(run_emulator(norm_input, LinPkemu.TrainedEmulator))
     norm_output = inv_maximin(output, LinPkemu.OutMinMax)
@@ -79,6 +84,7 @@ The following keyword arguments are used to specify the name of the files used t
 - `inminmax_file`, default `inminmax.npy`
 - `outminmax_file`, default `outminmax.npy`
 - `nn_setup_file`, default `nn_setup.json`
+- `preprocessing_file`, default `preprocessing.jl`
 - `postprocessing_file`, default `postprocessing.jl`
 If the corresponding file in the folder you are trying to load have different names,
  change the default values accordingly.
@@ -86,7 +92,7 @@ If the corresponding file in the folder you are trying to load have different na
 function load_emulator(path::String; emu = SimpleChainsEmulator,
     k_file = "k.npy", weights_file = "weights.npy", inminmax_file = "inminmax.npy",
     outminmax_file = "outminmax.npy", nn_setup_file = "nn_setup.json",
-    postprocessing_file = "postprocessing.jl")
+    preprocessing_file = "preprocessing.jl", postprocessing_file = "postprocessing.jl")
     NN_dict = parsefile(path*nn_setup_file)
     k = npzread(path*k_file)
 
@@ -95,6 +101,7 @@ function load_emulator(path::String; emu = SimpleChainsEmulator,
     Pk_emu = Mapse.LinearPkEmulator(TrainedEmulator = trained_emu, kgrid = k,
                              InMinMax = npzread(path*inminmax_file),
                              OutMinMax = npzread(path*outminmax_file),
+                             Preprocessing = include(path*preprocessing_file),
                              Postprocessing = include(path*postprocessing_file))
     return Pk_emu
 end

@@ -27,9 +27,11 @@ z = Array(LinRange(0., 3., 100))
 emu = Mapse.SimpleChainsEmulator(Architecture = mlpd, Weights = weights)
 
 postprocessing = (input, output, D, Pkemu) -> output
+preprocessing = (input) -> input
 
 effort_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
+                                Preprocessing = preprocessing,
                                 Postprocessing = postprocessing)
 
 x = [Ωcb0, h, mν, w0, wa]
