@@ -28,7 +28,7 @@ emu = Mapse.SimpleChainsEmulator(Architecture = mlpd, Weights = weights)
 
 postprocessing = (input, output, D, Pkemu) -> output
 
-effort_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test, zgrid=z_test,
+effort_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
                                 Postprocessing = postprocessing)
 
@@ -74,4 +74,11 @@ x3 = Array(LinRange(-1., 1., 100))
     @test isapprox([Mapse.D_z(myz, Ωcb0, h; mν =mν, w0=w0, wa=wa) for myz in z],  Mapse.D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa), rtol=1e-10)
     mycosmo = Mapse.w0waCDMCosmology(ln10Aₛ=3., nₛ=0.96, h=0.636, ωb=0.02237, ωc = 0.1, mν=0.06, w0=-2., wa=1.)
     mycosmo_ref = Mapse.w0waCDMCosmology(ln10Aₛ=3., nₛ=0.96, h=0.6736, ωb=0.02237, ωc = 0.12, mν=0.06, w0=-1., wa=0.)
+
+    # Test get_Pk
+    pk_scalar = Mapse.get_Pk(x, 1.0, 1.0, effort_emu)
+    @test size(pk_scalar) == (40,)
+
+    pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], effort_emu)
+    @test size(pk_vector) == (40, 2)
 end
