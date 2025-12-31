@@ -40,7 +40,7 @@ pkcb_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 Postprocessing = postprocessing)
 
 postprocessing_boost = (input, output, emu) -> output
-boost_emu = Mapse.NonLinearBoostPk(TrainedEmulator = emu, kgrid=k_test,
+boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
                                 Postprocessing = postprocessing_boost)
 

@@ -31,12 +31,12 @@ end
 Adapt.@adapt_structure LinearPkEmulator
 
 """
-    NonLinearBoostPk(TrainedEmulator::AbstractTrainedEmulators, kgrid::Array,
+    NonLinearBoostPkEmulator(TrainedEmulator::AbstractTrainedEmulators, kgrid::Array,
     InMinMax::Matrix, OutMinMax::Matrix, Postprocessing::Function)
 
 Emulator for the non-linear boost factor.
 """
-@kwdef mutable struct NonLinearBoostPk <: AbstractPkEmulators
+@kwdef mutable struct NonLinearBoostPkEmulator <: AbstractPkEmulators
     TrainedEmulator::AbstractTrainedEmulators
     kgrid::AbstractVector
     InMinMax::AbstractMatrix
@@ -44,7 +44,7 @@ Emulator for the non-linear boost factor.
     Postprocessing::Function
 end
 
-Adapt.@adapt_structure NonLinearBoostPk
+Adapt.@adapt_structure NonLinearBoostPkEmulator
 
 """
     get_Pk(input_params, z, D, LinPkemu::LinearPkEmulator)
@@ -70,10 +70,10 @@ function get_Pk(input_params, z::AbstractVector, D::AbstractVector, LinPkemu::Li
 end
 
 """
-    get_Pk(input_params, z, BoostEmu::NonLinearBoostPk)
+    get_Pk(input_params, z, BoostEmu::NonLinearBoostPkEmulator)
 Computes and returns the non-linear boost on the ``k``-grid the emulator has been trained on and the input ``z``, given input array `input_params`.
 """
-function get_Pk(input_params, z::Number, BoostEmu::NonLinearBoostPk)
+function get_Pk(input_params, z::Number, BoostEmu::NonLinearBoostPkEmulator)
     input = vcat(input_params, z)
     norm_input = maximin(input, BoostEmu.InMinMax)
     output = Array(run_emulator(norm_input, BoostEmu.TrainedEmulator))
@@ -81,7 +81,7 @@ function get_Pk(input_params, z::Number, BoostEmu::NonLinearBoostPk)
     return BoostEmu.Postprocessing(input_params, norm_output, BoostEmu)
 end
 
-function get_Pk(input_params, z::AbstractVector, BoostEmu::NonLinearBoostPk)
+function get_Pk(input_params, z::AbstractVector, BoostEmu::NonLinearBoostPkEmulator)
     input = vcat(repeat(input_params, 1, length(z)), reshape(z, 1, :))
     norm_input = maximin(input, BoostEmu.InMinMax)
     output = Array(run_emulator(norm_input, BoostEmu.TrainedEmulator))
@@ -90,14 +90,14 @@ function get_Pk(input_params, z::AbstractVector, BoostEmu::NonLinearBoostPk)
 end
 
 """
-    PkEmulator(LinearPmm::LinearPkEmulator, LinearPkcb::LinearPkEmulator, Boost::NonLinearBoostPk)
+    PkEmulator(LinearPmm::LinearPkEmulator, LinearPkcb::LinearPkEmulator, Boost::NonLinearBoostPkEmulator)
 
 Master emulator struct that combines linear matter, linear c+b, and non-linear boost emulators.
 """
 @kwdef mutable struct PkEmulator <: AbstractPkEmulators
     LinearPmm::LinearPkEmulator
     LinearPkcb::LinearPkEmulator
-    Boost::NonLinearBoostPk
+    Boost::NonLinearBoostPkEmulator
 end
 
 Adapt.@adapt_structure PkEmulator
@@ -181,8 +181,8 @@ function load_emulator(path::String; emu = SimpleChainsEmulator,
                                  OutMinMax = npzread(path*outminmax_file),
                                  Preprocessing = include(path*preprocessing_file),
                                  Postprocessing = include(path*postprocessing_file))
-    elseif structure == NonLinearBoostPk
-        Pk_emu = Mapse.NonLinearBoostPk(TrainedEmulator = trained_emu, kgrid = k,
+    elseif structure == NonLinearBoostPkEmulator
+        Pk_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = trained_emu, kgrid = k,
                                  InMinMax = npzread(path*inminmax_file),
                                  OutMinMax = npzread(path*outminmax_file),
                                  Postprocessing = include(path*postprocessing_file))
