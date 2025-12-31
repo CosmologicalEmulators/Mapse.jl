@@ -90,39 +90,47 @@ function get_Pk(input_params, z::AbstractVector, BoostEmu::NonLinearBoostPk)
 end
 
 """
-    PkEmulator(LinearEmu::LinearPkEmulator, BoostEmu::NonLinearBoostPk)
+    PkEmulator(LinearPmm::LinearPkEmulator, LinearPkcb::LinearPkEmulator, Boost::NonLinearBoostPk)
 
-Master emulator struct that combines a linear power spectrum emulator and a non-linear boost emulator.
-The final power spectrum is the product of the outputs of these two components.
+Master emulator struct that combines linear matter, linear c+b, and non-linear boost emulators.
 """
 @kwdef mutable struct PkEmulator <: AbstractPkEmulators
-    LinearEmu::LinearPkEmulator
-    BoostEmu::NonLinearBoostPk
+    LinearPmm::LinearPkEmulator
+    LinearPkcb::LinearPkEmulator
+    Boost::NonLinearBoostPk
 end
 
 Adapt.@adapt_structure PkEmulator
 
 """
     get_Pk(input_params, z, D, PkEmu::PkEmulator)
-Computes the final non-linear power spectrum by combining the linear part and the boost factor.
-Returns ``P_{lin}(k, z) \\times Boost(k, z)``.
+Computes the final non-linear matter power spectrum by combining the linear matter part and the boost factor.
+Returns ``P_{mm, lin}(k, z) \\times Boost(k, z)``.
 """
 function get_Pk(input_params, z, D, PkEmu::PkEmulator)
-    lin_pk = get_Pk(input_params, z, D, PkEmu.LinearEmu)
-    boost = get_Pk(input_params, z, PkEmu.BoostEmu)
-    return lin_pk .* boost
+    lin_pmm = get_Pk(input_params, z, D, PkEmu.LinearPmm)
+    boost = get_Pk(input_params, z, PkEmu.Boost)
+    return lin_pmm .* boost
 end
 
 """
-    get_linear_Pk(input_params, z, D, PkEmu::PkEmulator)
-Returns only the linear power spectrum part of the PkEmulator.
+    get_linear_Pmm(input_params, z, D, PkEmu::PkEmulator)
+Returns only the linear matter power spectrum part of the PkEmulator.
 """
-function get_linear_Pk(input_params, z, D, PkEmu::PkEmulator)
-    return get_Pk(input_params, z, D, PkEmu.LinearEmu)
+function get_linear_Pmm(input_params, z, D, PkEmu::PkEmulator)
+    return get_Pk(input_params, z, D, PkEmu.LinearPmm)
 end
 
 """
-    get_kgrid(PkEmulator::AbstractCℓEmulators)
+    get_linear_Pkcb(input_params, z, D, PkEmu::PkEmulator)
+Returns only the linear c+b power spectrum part of the PkEmulator.
+"""
+function get_linear_Pkcb(input_params, z, D, PkEmu::PkEmulator)
+    return get_Pk(input_params, z, D, PkEmu.LinearPkcb)
+end
+
+"""
+    get_kgrid(PkEmulator::AbstractPkEmulators)
 Returns the ``k``-grid the emulator has been trained on.
 """
 function get_kgrid(PkEmulator::AbstractPkEmulators)
