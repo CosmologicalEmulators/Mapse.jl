@@ -34,6 +34,11 @@ effort_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 Preprocessing = preprocessing,
                                 Postprocessing = postprocessing)
 
+postprocessing_boost = (input, output, emu) -> output
+boost_emu = Mapse.NonLinearBoostPk(TrainedEmulator = emu, kgrid=k_test,
+                                InMinMax = inminmax, OutMinMax = outminmax,
+                                Postprocessing = postprocessing_boost)
+
 x = [Ωcb0, h, mν, w0, wa]
 
 n = 64
@@ -83,4 +88,27 @@ x3 = Array(LinRange(-1., 1., 100))
 
     pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], effort_emu)
     @test size(pk_vector) == (40, 2)
+
+    # Test get_Pk for Boost
+    boost_scalar = Mapse.get_Pk(x, 1.0, boost_emu)
+    @test size(boost_scalar) == (40,)
+
+    boost_vector = Mapse.get_Pk(x, [0.5, 1.0], boost_emu)
+    @test size(boost_vector) == (40, 2)
+
+    # Test PkEmulator (Combined)
+    full_emu = Mapse.PkEmulator(LinearEmu = effort_emu, BoostEmu = boost_emu)
+    
+    full_pk_scalar = Mapse.get_Pk(x, 1.0, 1.0, full_emu)
+    @test size(full_pk_scalar) == (40,)
+    
+    full_pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], full_emu)
+    @test size(full_pk_vector) == (40, 2)
+
+    # Test get_linear_Pk
+    linear_only_scalar = Mapse.get_linear_Pk(x, 1.0, 1.0, full_emu)
+    @test linear_only_scalar == Mapse.get_Pk(x, 1.0, 1.0, effort_emu)
+
+    linear_only_vector = Mapse.get_linear_Pk(x, [0.5, 1.0], [1.0, 1.0], full_emu)
+    @test linear_only_vector == Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], effort_emu)
 end

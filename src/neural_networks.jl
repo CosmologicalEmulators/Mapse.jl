@@ -30,6 +30,21 @@ end
 
 Adapt.@adapt_structure LinearPkEmulator
 
+"""
+    NonLinearBoostPk(TrainedEmulator::AbstractTrainedEmulators, kgrid::Array,
+    InMinMax::Matrix, OutMinMax::Matrix, Postprocessing::Function)
+
+Emulator for the non-linear boost factor.
+"""
+@kwdef mutable struct NonLinearBoostPk <: AbstractPkEmulators
+    TrainedEmulator::AbstractTrainedEmulators
+    kgrid::AbstractVector
+    InMinMax::AbstractMatrix
+    OutMinMax::AbstractMatrix
+    Postprocessing::Function
+end
+
+Adapt.@adapt_structure NonLinearBoostPk
 
 """
     get_Pk(input_params, z, D, LinPkemu::LinearPkEmulator)
@@ -47,11 +62,63 @@ end
 
 function get_Pk(input_params, z::AbstractVector, D::AbstractVector, LinPkemu::LinearPkEmulator)
     preprocessed_input = LinPkemu.Preprocessing(input_params)
-    input = reduce(hcat, [vcat(preprocessed_input, zi) for zi in z])
+    input = vcat(repeat(preprocessed_input, 1, length(z)), reshape(z, 1, :))
     norm_input = maximin(input, LinPkemu.InMinMax)
     output = Array(run_emulator(norm_input, LinPkemu.TrainedEmulator))
     norm_output = inv_maximin(output, LinPkemu.OutMinMax)
     return LinPkemu.Postprocessing(input_params, norm_output, D, LinPkemu)
+end
+
+"""
+    get_Pk(input_params, z, BoostEmu::NonLinearBoostPk)
+Computes and returns the non-linear boost on the ``k``-grid the emulator has been trained on and the input ``z``, given input array `input_params`.
+"""
+function get_Pk(input_params, z::Number, BoostEmu::NonLinearBoostPk)
+    input = vcat(input_params, z)
+    norm_input = maximin(input, BoostEmu.InMinMax)
+    output = Array(run_emulator(norm_input, BoostEmu.TrainedEmulator))
+    norm_output = inv_maximin(output, BoostEmu.OutMinMax)
+    return BoostEmu.Postprocessing(input_params, norm_output, BoostEmu)
+end
+
+function get_Pk(input_params, z::AbstractVector, BoostEmu::NonLinearBoostPk)
+    input = vcat(repeat(input_params, 1, length(z)), reshape(z, 1, :))
+    norm_input = maximin(input, BoostEmu.InMinMax)
+    output = Array(run_emulator(norm_input, BoostEmu.TrainedEmulator))
+    norm_output = inv_maximin(output, BoostEmu.OutMinMax)
+    return BoostEmu.Postprocessing(input_params, norm_output, BoostEmu)
+end
+
+"""
+    PkEmulator(LinearEmu::LinearPkEmulator, BoostEmu::NonLinearBoostPk)
+
+Master emulator struct that combines a linear power spectrum emulator and a non-linear boost emulator.
+The final power spectrum is the product of the outputs of these two components.
+"""
+@kwdef mutable struct PkEmulator <: AbstractPkEmulators
+    LinearEmu::LinearPkEmulator
+    BoostEmu::NonLinearBoostPk
+end
+
+Adapt.@adapt_structure PkEmulator
+
+"""
+    get_Pk(input_params, z, D, PkEmu::PkEmulator)
+Computes the final non-linear power spectrum by combining the linear part and the boost factor.
+Returns ``P_{lin}(k, z) \\times Boost(k, z)``.
+"""
+function get_Pk(input_params, z, D, PkEmu::PkEmulator)
+    lin_pk = get_Pk(input_params, z, D, PkEmu.LinearEmu)
+    boost = get_Pk(input_params, z, PkEmu.BoostEmu)
+    return lin_pk .* boost
+end
+
+"""
+    get_linear_Pk(input_params, z, D, PkEmu::PkEmulator)
+Returns only the linear power spectrum part of the PkEmulator.
+"""
+function get_linear_Pk(input_params, z, D, PkEmu::PkEmulator)
+    return get_Pk(input_params, z, D, PkEmu.LinearEmu)
 end
 
 """
@@ -90,6 +157,7 @@ If the corresponding file in the folder you are trying to load have different na
  change the default values accordingly.
 """
 function load_emulator(path::String; emu = SimpleChainsEmulator,
+    structure = LinearPkEmulator,
     k_file = "k.npy", weights_file = "weights.npy", inminmax_file = "inminmax.npy",
     outminmax_file = "outminmax.npy", nn_setup_file = "nn_setup.json",
     preprocessing_file = "preprocessing.jl", postprocessing_file = "postprocessing.jl")
@@ -98,10 +166,20 @@ function load_emulator(path::String; emu = SimpleChainsEmulator,
 
     weights = npzread(path*weights_file)
     trained_emu = Mapse.init_emulator(NN_dict, weights, emu)
-    Pk_emu = Mapse.LinearPkEmulator(TrainedEmulator = trained_emu, kgrid = k,
-                             InMinMax = npzread(path*inminmax_file),
-                             OutMinMax = npzread(path*outminmax_file),
-                             Preprocessing = include(path*preprocessing_file),
-                             Postprocessing = include(path*postprocessing_file))
+
+    if structure == LinearPkEmulator
+        Pk_emu = Mapse.LinearPkEmulator(TrainedEmulator = trained_emu, kgrid = k,
+                                 InMinMax = npzread(path*inminmax_file),
+                                 OutMinMax = npzread(path*outminmax_file),
+                                 Preprocessing = include(path*preprocessing_file),
+                                 Postprocessing = include(path*postprocessing_file))
+    elseif structure == NonLinearBoostPk
+        Pk_emu = Mapse.NonLinearBoostPk(TrainedEmulator = trained_emu, kgrid = k,
+                                 InMinMax = npzread(path*inminmax_file),
+                                 OutMinMax = npzread(path*outminmax_file),
+                                 Postprocessing = include(path*postprocessing_file))
+    else
+        throw(ArgumentError("Unknown emulator structure: $structure"))
+    end
     return Pk_emu
 end
