@@ -31,4 +31,7 @@ end
 include("neural_networks.jl")
 include("primordial.jl")
 
+export MapseEmulator, PkEmulator, load_component_emulator, load_emulator,
+    get_Pk, get_linear_Pmm, get_linear_Pkcb, get_kgrid, get_emulator_description
+
 end # module
