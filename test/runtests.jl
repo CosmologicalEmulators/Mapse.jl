@@ -29,12 +29,12 @@ emu = Mapse.SimpleChainsEmulator(Architecture = mlpd, Weights = weights)
 postprocessing = (input, output, D, Pkemu) -> output
 preprocessing = (input) -> input
 
-effort_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test,
+effort_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
                                 Preprocessing = preprocessing,
                                 Postprocessing = postprocessing)
 
-pkcb_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test,
+pkcb_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
                                 Preprocessing = preprocessing,
                                 Postprocessing = postprocessing)
@@ -42,6 +42,7 @@ pkcb_emu = Mapse.LinearPkEmulator(TrainedEmulator = emu, kgrid=k_test,
 postprocessing_boost = (input, output, emu) -> output
 boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
+                                Preprocessing = preprocessing,
                                 Postprocessing = postprocessing_boost)
 
 x = [Ωcb0, h, mν, w0, wa]
@@ -103,10 +104,10 @@ x3 = Array(LinRange(-1., 1., 100))
 
     # Test PkEmulator (Combined)
     full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPkcb = pkcb_emu, Boost = boost_emu)
-    
+
     full_pk_scalar = Mapse.get_Pk(x, 1.0, 1.0, full_emu)
     @test size(full_pk_scalar) == (40,)
-    
+
     full_pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], full_emu)
     @test size(full_pk_vector) == (40, 2)
 
