@@ -1,8 +1,21 @@
 abstract type AbstractPkEmulators end
 
+abstract type AbstractCompression end
+struct NoCompression <: AbstractCompression end
+@kwdef struct PCACompression{T<:AbstractVector, M<:AbstractMatrix} <: AbstractCompression
+    mean::T
+    basis::M
+end
+
+Adapt.@adapt_structure PCACompression
+
+reconstruct(y, ::NoCompression) = y
+reconstruct(y, c::PCACompression) = c.mean .+ c.basis * y
+
 """
     MapseEmulator(TrainedEmulator::AbstractTrainedEmulators, kgrid::Array,
-    InMinMax::Matrix, OutMinMax::Matrix, Preprocessing::Function, Postprocessing::Function)
+    InMinMax::Matrix, OutMinMax::Matrix, Preprocessing::Function, Postprocessing::Function,
+    Compression::AbstractCompression)
 
 Fundamental struct for Mapse emulators (Linear or Boost).
 """
@@ -13,21 +26,29 @@ Fundamental struct for Mapse emulators (Linear or Boost).
     OutMinMax::AbstractMatrix
     Preprocessing::Function
     Postprocessing::Function
+    Compression::AbstractCompression = NoCompression()
 end
 
 Adapt.@adapt_structure MapseEmulator
+
+const NonLinearBoostPkEmulator = MapseEmulator
 
 """
     get_Pk(input_params, z, D, emu::MapseEmulator)
 Computes and returns the power spectrum (or boost) given input parameters, redshift, and growth factor.
 """
-function get_Pk(input_params, z::Number, D::Number, emu::MapseEmulator)
+function get_Pk(input_params, z::Number, D::Union{Number, Nothing}, emu::MapseEmulator)
     preprocessed_input = emu.Preprocessing(input_params)
     input = vcat(z, preprocessed_input)
     norm_input = maximin(input, emu.InMinMax)
     output = Array(run_emulator(norm_input, emu.TrainedEmulator))
-    norm_output = inv_maximin(output, emu.OutMinMax)
-    return emu.Postprocessing(input_params, norm_output, D, emu)
+    denorm_output = inv_maximin(output, emu.OutMinMax)
+    reconstructed_output = reconstruct(denorm_output, emu.Compression)
+    return emu.Postprocessing(input_params, reconstructed_output, D, emu)
+end
+
+function get_Pk(input_params, z::Number, emu::MapseEmulator)
+    return get_Pk(input_params, z, nothing, emu)
 end
 
 function get_Pk(input_params, z::AbstractVector, D::AbstractVector, emu::MapseEmulator)
@@ -35,8 +56,13 @@ function get_Pk(input_params, z::AbstractVector, D::AbstractVector, emu::MapseEm
     input = vcat(reshape(z, 1, :), repeat(preprocessed_input, 1, length(z)))
     norm_input = maximin(input, emu.InMinMax)
     output = Array(run_emulator(norm_input, emu.TrainedEmulator))
-    norm_output = inv_maximin(output, emu.OutMinMax)
-    return emu.Postprocessing(input_params, norm_output, D, emu)
+    denorm_output = inv_maximin(output, emu.OutMinMax)
+    reconstructed_output = reconstruct(denorm_output, emu.Compression)
+    return emu.Postprocessing(input_params, reconstructed_output, D, emu)
+end
+
+function get_Pk(input_params, z::AbstractVector, emu::MapseEmulator)
+    return get_Pk(input_params, z, fill(nothing, length(z)), emu)
 end
 
 """
@@ -91,12 +117,22 @@ Load a single MapseEmulator component from a directory.
 function load_component_emulator(path::String; emu = LuxEmulator,
     k_file = "k.npy", weights_file = "weights.npy", inminmax_file = "inminmax.npy",
     outminmax_file = "outminmax.npy", nn_setup_file = "nn_setup.json",
-    preprocessing_file = "preprocessing.jl", postprocessing_file = "postprocessing.jl")
+    preprocessing_file = "preprocessing.jl", postprocessing_file = "postprocessing.jl",
+    pca_mean_file = "pca_mean.npy", pca_basis_file = "pca_projection.npy")
 
     NN_dict = parsefile(path*nn_setup_file)
     k = npzread(path*k_file)
     weights = npzread(path*weights_file)
     trained_emu = Mapse.init_emulator(NN_dict, weights, emu)
+
+    compression = if isfile(path*pca_mean_file) && isfile(path*pca_basis_file)
+        PCACompression(
+            mean = npzread(path*pca_mean_file),
+            basis = npzread(path*pca_basis_file)
+        )
+    else
+        NoCompression()
+    end
 
     return Mapse.MapseEmulator(
         TrainedEmulator = trained_emu,
@@ -104,7 +140,8 @@ function load_component_emulator(path::String; emu = LuxEmulator,
         InMinMax = npzread(path*inminmax_file),
         OutMinMax = npzread(path*outminmax_file),
         Preprocessing = include(path*preprocessing_file),
-        Postprocessing = include(path*postprocessing_file)
+        Postprocessing = include(path*postprocessing_file),
+        Compression = compression
     )
 end
 
@@ -121,4 +158,27 @@ function load_emulator(path::String;
     boost = load_component_emulator(joinpath(path, boost_folder); emu=emu)
 
     return PkEmulator(LinearPmm=pmm, LinearPcb=pcb, Boost=boost)
+end
+
+"""
+    compute_pca(data::AbstractMatrix, n_components::Int)
+Computes PCA on the training targets.
+Returns: mean vector, basis matrix, and PCA coefficients.
+"""
+function compute_pca(data::AbstractMatrix, n_components::Int)
+    μ = mean(data, dims=2)
+    centered_data = data .- μ
+    U, S, V = svd(centered_data)
+    basis = U[:, 1:n_components]
+    coefficients = basis' * centered_data
+    return μ[:, 1], basis, coefficients
+end
+
+"""
+    save_pca_metadata(path::String, mean::AbstractVector, basis::AbstractMatrix)
+Saves PCA metadata needed for reconstruction.
+"""
+function save_pca_metadata(path::String, mean::AbstractVector, basis::AbstractMatrix)
+    npzwrite(joinpath(path, "pca_mean.npy"), mean)
+    npzwrite(joinpath(path, "pca_basis.npy"), basis)
 end

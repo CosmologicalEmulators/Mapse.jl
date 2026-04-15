@@ -39,7 +39,7 @@ pkcb_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 Preprocessing = preprocessing,
                                 Postprocessing = postprocessing)
 
-postprocessing_boost = (input, output, emu) -> output
+postprocessing_boost = (input, output, D, emu) -> output
 boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
                                 Preprocessing = preprocessing,
@@ -103,7 +103,7 @@ x3 = Array(LinRange(-1., 1., 100))
     @test size(boost_vector) == (40, 2)
 
     # Test PkEmulator (Combined)
-    full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPkcb = pkcb_emu, Boost = boost_emu)
+    full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPcb = pkcb_emu, Boost = boost_emu)
 
     full_pk_scalar = Mapse.get_Pk(x, 1.0, 1.0, full_emu)
     @test size(full_pk_scalar) == (40,)
