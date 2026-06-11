@@ -111,10 +111,174 @@ x3 = Array(LinRange(-1., 1., 100))
     full_pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], full_emu)
     @test size(full_pk_vector) == (40, 2)
 
+    bad_boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test[1:end-1],
+                                    InMinMax = inminmax, OutMinMax = outminmax,
+                                    Preprocessing = preprocessing,
+                                    Postprocessing = postprocessing_boost)
+    bad_full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPcb = pkcb_emu, Boost = bad_boost_emu)
+    @test_throws DimensionMismatch Mapse.get_Pk(x, 1.0, 1.0, bad_full_emu)
+
     # Test get_linear_Pmm and get_linear_Pkcb
     linear_pmm_scalar = Mapse.get_linear_Pmm(x, 1.0, 1.0, full_emu)
     @test linear_pmm_scalar == Mapse.get_Pk(x, 1.0, 1.0, effort_emu)
 
     linear_pkcb_vector = Mapse.get_linear_Pkcb(x, [0.5, 1.0], [1.0, 1.0], full_emu)
     @test linear_pkcb_vector == Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], pkcb_emu)
+
+    # Test PCA reconstruction used by compressed MAPSE artifacts.
+    compression = Mapse.PCACompression(
+        mean = [10.0, 20.0, 30.0],
+        basis = [
+            1.0 0.0
+            0.0 1.0
+            1.0 1.0
+        ]
+    )
+    @test Mapse.reconstruct([2.0, 3.0], compression) ≈ [12.0, 23.0, 35.0]
+    @test Mapse.reconstruct([2.0 3.0; 4.0 5.0], compression) ≈ [12.0 13.0; 24.0 25.0; 36.0 38.0]
+
+    @test Mapse.preprocessing_linear_pk_mnuw0wacdm(collect(1:8)) == collect(3:8)
+    @test Mapse.preprocessing_boost_mnuw0wacdm(collect(1:8)) == collect(1:8)
+    @test haskey(Mapse.LOAD_PRESETS, :mnuw0wacdm_class)
+    @test Mapse.BUILTIN_PREPROCESSING["linear_pk_mnuw0wacdm"] === Mapse.preprocessing_linear_pk_mnuw0wacdm
+    @test Mapse.BUILTIN_PREPROCESSING["boost_mnuw0wacdm"] === Mapse.preprocessing_boost_mnuw0wacdm
+    @test Mapse.BUILTIN_POSTPROCESSING["linear_pk_mnuw0wacdm_sym_ratio"] === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
+    @test Mapse.BUILTIN_POSTPROCESSING["boost_log10"] === Mapse.postprocessing_boost_log10
+    @test Mapse.DEFAULT_EMULATOR_NAME == "mnuw0wacdm_class"
+    @test Mapse.DEFAULT_EMULATOR_ARTIFACT == "mnuw0wacdm_class"
+    @test Mapse.TRAINED_EMULATOR_ARTIFACTS[Mapse.DEFAULT_EMULATOR_NAME] == Mapse.DEFAULT_EMULATOR_ARTIFACT
+    @test haskey(Mapse.trained_emulators, Mapse.DEFAULT_EMULATOR_NAME)
+    @test Mapse.trained_emulators[Mapse.DEFAULT_EMULATOR_NAME] isa Mapse.PkEmulator
+    artifacts_toml = read(Mapse.ARTIFACTS_TOML, String)
+    @test occursin("git-tree-sha1 = \"c1a93f08faafd81f6c62ac3ee97bb9fe37f8cf2e\"", artifacts_toml)
+    @test occursin("zenodo.org/records/20646263", artifacts_toml)
+    @test !occursin("lazy = true", artifacts_toml)
+
+    primitive_output = ones(3)
+    primitive_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=[0.1, 0.2, 0.3],
+                                        InMinMax = inminmax, OutMinMax = outminmax,
+                                        Preprocessing = preprocessing,
+                                        Postprocessing = postprocessing)
+    primitive_params = [3.0, 0.96, 67.0, 0.0224, 0.12, 0.06, -1.0, 0.0]
+    scalar_post = Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio(primitive_params, primitive_output, 2.0, primitive_emu)
+    vector_post = Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio(primitive_params, repeat(primitive_output, 1, 2), [2.0, 3.0], primitive_emu)
+    @test size(scalar_post) == (3,)
+    @test size(vector_post) == (3, 2)
+    @test vector_post[:, 1] ≈ scalar_post
+    @test vector_post[:, 2] ≈ scalar_post .* (3.0 / 2.0)^2
+    @test Mapse.postprocessing_boost_log10(primitive_params, [0.0, 1.0, 2.0], nothing, primitive_emu) ≈ [1.0, 10.0, 100.0]
+
+    mktempdir() do dir
+        Mapse.save_pca_metadata(dir, compression.mean, compression.basis)
+        @test isfile(joinpath(dir, "pca_mean.npy"))
+        @test isfile(joinpath(dir, "pca_projection.npy"))
+        @test npzread(joinpath(dir, "pca_mean.npy")) ≈ compression.mean
+        @test npzread(joinpath(dir, "pca_projection.npy")) ≈ compression.basis
+    end
+
+    mktempdir() do dir
+        open(joinpath(dir, "nn_setup.json"), "w") do io
+            write(io, """
+            {
+                "n_input_features": 6,
+                "n_output_features": 2,
+                "n_hidden_layers": 1,
+                "layers": {
+                    "layer_1": {
+                        "n_neurons": 4,
+                        "activation_function": "tanh"
+                    }
+                },
+                "preprocessing_name": "identity",
+                "postprocessing_name": "identity"
+            }
+            """)
+        end
+
+        npzwrite(joinpath(dir, "weights.npy"), zeros(Float32, 6 * 4 + 4 + 4 * 2 + 2))
+        npzwrite(joinpath(dir, "k.npy"), [0.1, 0.2, 0.3])
+        npzwrite(joinpath(dir, "inminmax.npy"), hcat(zeros(6), ones(6)))
+        npzwrite(joinpath(dir, "outminmax.npy"), hcat(zeros(2), ones(2)))
+        npzwrite(joinpath(dir, "pca_mean.npy"), compression.mean)
+        npzwrite(joinpath(dir, "pca_basis.npy"), compression.basis)
+
+        loaded_component = Mapse.load_component_emulator(dir; emu=Mapse.SimpleChainsEmulator)
+
+        @test loaded_component.TrainedEmulator.Description["emulator_description"] == Dict{String, Any}()
+        @test loaded_component.Compression isa Mapse.PCACompression
+        @test Mapse.get_Pk([0.1, 0.2, 0.3, 0.4, 0.5], 0.0, 1.0, loaded_component) ≈ compression.mean
+    end
+
+    mktempdir() do dir
+        open(joinpath(dir, "nn_setup.json"), "w") do io
+            write(io, """
+            {
+                "n_input_features": 6,
+                "n_output_features": 2,
+                "n_hidden_layers": 1,
+                "layers": {
+                    "layer_1": {
+                        "n_neurons": 4,
+                        "activation_function": "tanh"
+                    }
+                }
+            }
+            """)
+        end
+
+        npzwrite(joinpath(dir, "weights.npy"), zeros(Float32, 6 * 4 + 4 + 4 * 2 + 2))
+        npzwrite(joinpath(dir, "k.npy"), [0.1, 0.2])
+        npzwrite(joinpath(dir, "inminmax.npy"), hcat(zeros(6), ones(6)))
+        npzwrite(joinpath(dir, "outminmax.npy"), hcat(zeros(2), ones(2)))
+
+        loaded_component = Mapse.load_component_emulator(dir; emu=Mapse.SimpleChainsEmulator,
+            preprocessing_name = :identity,
+            postprocessing_name = :identity)
+
+        @test loaded_component.Preprocessing === identity
+        @test loaded_component.Postprocessing === Mapse.BUILTIN_POSTPROCESSING["identity"]
+        @test_throws ArgumentError Mapse.load_component_emulator(dir; emu=Mapse.SimpleChainsEmulator,
+            preprocessing_name = :not_a_registered_function,
+            postprocessing_name = :identity)
+    end
+
+    mktempdir() do dir
+        function write_minimal_component(component_dir, n_input_features)
+            mkpath(component_dir)
+            open(joinpath(component_dir, "nn_setup.json"), "w") do io
+                write(io, """
+                {
+                    "n_input_features": $(n_input_features),
+                    "n_output_features": 2,
+                    "n_hidden_layers": 1,
+                    "layers": {
+                        "layer_1": {
+                            "n_neurons": 4,
+                            "activation_function": "tanh"
+                        }
+                    }
+                }
+                """)
+            end
+
+            npzwrite(joinpath(component_dir, "weights.npy"), zeros(Float32, n_input_features * 4 + 4 + 4 * 2 + 2))
+            npzwrite(joinpath(component_dir, "k.npy"), [0.1, 0.2])
+            npzwrite(joinpath(component_dir, "inminmax.npy"), hcat(zeros(n_input_features), ones(n_input_features)))
+            npzwrite(joinpath(component_dir, "outminmax.npy"), hcat(zeros(2), ones(2)))
+        end
+
+        write_minimal_component(joinpath(dir, "Pk_lin_mm"), 7)
+        write_minimal_component(joinpath(dir, "Pk_lin_cb"), 7)
+        write_minimal_component(joinpath(dir, "Boost"), 9)
+
+        preset_emu = Mapse.load_emulator(dir; emu=Mapse.SimpleChainsEmulator,
+            preset = :mnuw0wacdm_class)
+
+        @test preset_emu.LinearPmm.Preprocessing === Mapse.preprocessing_linear_pk_mnuw0wacdm
+        @test preset_emu.LinearPcb.Preprocessing === Mapse.preprocessing_linear_pk_mnuw0wacdm
+        @test preset_emu.Boost.Preprocessing === Mapse.preprocessing_boost_mnuw0wacdm
+        @test preset_emu.LinearPmm.Postprocessing === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
+        @test preset_emu.LinearPcb.Postprocessing === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
+        @test preset_emu.Boost.Postprocessing === Mapse.postprocessing_boost_log10
+    end
 end
