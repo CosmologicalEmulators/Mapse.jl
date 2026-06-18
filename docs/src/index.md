@@ -60,6 +60,22 @@ x = rand(6) # generate some random input
 Mapse.get_Pk(x, Pk_emu) #compute the Pk's
 ```
 
+### Halofit and Reactant
+
+`Mapse.halofit_Pmm` can compute a Halofit nonlinear total-matter spectrum from a
+linear `Pmm` grid. For Reactant/XLA workflows the background calculation must be
+performed outside the compiled Halofit kernel and passed explicitly:
+
+```julia
+pk_nl = Mapse.halofit_Pmm(cpar, z, k, pk_lin_mm_z, Ωm_z, Ωv_z)
+```
+
+Here `Ωm_z` and `Ωv_z` are the matter and dark-energy density fractions at the
+redshifts in `z`. Loading `Reactant` activates `MapseReactantExt`, which provides
+Reactant dispatch for this explicit-background API. The convenience helper
+`Mapse.halofit_background` remains a host-side CLASS-parity background helper and
+should not be called inside `Reactant.@compile`.
+
 `SimpleChains.jl` and `Lux.jl` have almost the same performance and they give the same result up to floating point precision.
 
 These benchmarks have been performed locally, with a 13th Gen Intel® Core™ i7-13700H, using a single core.

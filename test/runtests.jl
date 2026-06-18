@@ -5,6 +5,9 @@ using Static
 using Mapse
 using DataInterpolations
 
+const RUN_REACTANT_TESTS = lowercase(get(ENV, "MAPSE_TEST_REACTANT", "false")) in
+                           ("1", "true", "yes")
+
 mlpd = SimpleChain(
   static(6),
   TurboDense(tanh, 64),
@@ -168,6 +171,54 @@ x3 = Array(LinRange(-1., 1., 100))
     @test vector_post[:, 2] ≈ scalar_post .* (3.0 / 2.0)^2
     @test Mapse.postprocessing_boost_log10(primitive_params, [0.0, 1.0, 2.0], nothing, primitive_emu) ≈ [1.0, 10.0, 100.0]
 
+    halofit_params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
+    halofit_cosmo = @inferred Mapse.halofit_cosmology(halofit_params)
+    @test halofit_cosmo.h ≈ 0.6736
+    @test halofit_cosmo.Ωm0 ≈ (0.02237 + 0.12 + 0.06 / 93.14) / 0.6736^2
+
+    halofit_k = exp.(range(log(1e-4), log(40.0), length=101))
+    halofit_z = [0.0, 1.0]
+    halofit_pk_lin = [1e4 * (k / 0.1)^0.96 * exp(-k / 5) / (1 + z)^2
+                      for k in halofit_k, z in halofit_z]
+    halofit_Ωm_z, halofit_Ωv_z = @inferred Mapse.halofit_background(halofit_cosmo, halofit_z)
+    @test size(halofit_Ωm_z) == size(halofit_z)
+    @test size(halofit_Ωv_z) == size(halofit_z)
+    @test Mapse.halofit_background(halofit_cosmo, halofit_z[1]) == (halofit_Ωm_z[1], halofit_Ωv_z[1])
+
+    halofit_pk_nl = Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin)
+    halofit_pk_nl_unchecked = @inferred Mapse._halofit_Pmm_unchecked(halofit_cosmo,
+                                                                     halofit_z,
+                                                                     halofit_k,
+                                                                     halofit_pk_lin,
+                                                                     halofit_Ωm_z,
+                                                                     halofit_Ωv_z)
+    halofit_pk_nl_one_z = @inferred Mapse._halofit_Pmm_one_z_unchecked(halofit_cosmo,
+                                                                       halofit_z[1],
+                                                                       halofit_k,
+                                                                       view(halofit_pk_lin, :, 1),
+                                                                       halofit_Ωm_z[1],
+                                                                       halofit_Ωv_z[1])
+    halofit_pk_nl_external_bg = @inferred Mapse.halofit_Pmm(halofit_cosmo, halofit_z,
+                                                           halofit_k, halofit_pk_lin,
+                                                           halofit_Ωm_z, halofit_Ωv_z)
+    @test size(halofit_pk_nl) == size(halofit_pk_lin)
+    @test halofit_pk_nl_unchecked ≈ halofit_pk_nl
+    @test halofit_pk_nl_one_z ≈ halofit_pk_nl[:, 1]
+    @test halofit_pk_nl_external_bg ≈ halofit_pk_nl
+    @test all(isfinite, halofit_pk_nl)
+    @test all(>(0), halofit_pk_nl)
+    @test Mapse.halofit_Pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1]) ≈ halofit_pk_nl[:, 1]
+    @test Mapse.halofit_Pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1],
+                            halofit_Ωm_z[1], halofit_Ωv_z[1]) ≈ halofit_pk_nl[:, 1]
+    @test size(Mapse.halofit_Pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin)) == size(halofit_pk_lin)
+    @test Mapse.halofit_Pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin,
+                            halofit_Ωm_z, halofit_Ωv_z) ≈ halofit_pk_nl
+    @test_throws ArgumentError Mapse.halofit_Pmm(halofit_cosmo, halofit_z, reverse(halofit_k), halofit_pk_lin)
+    @test_throws DimensionMismatch Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin[:, 1:1])
+    @test_throws DimensionMismatch Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k,
+                                                     halofit_pk_lin, halofit_Ωm_z[1:1],
+                                                     halofit_Ωv_z)
+
     mktempdir() do dir
         Mapse.save_pca_metadata(dir, compression.mean, compression.basis)
         @test isfile(joinpath(dir, "pca_mean.npy"))
@@ -281,4 +332,8 @@ x3 = Array(LinRange(-1., 1., 100))
         @test preset_emu.LinearPcb.Postprocessing === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
         @test preset_emu.Boost.Postprocessing === Mapse.postprocessing_boost_log10
     end
+end
+
+if RUN_REACTANT_TESTS
+    include("test_halofit_reactant.jl")
 end

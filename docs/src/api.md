@@ -7,4 +7,9 @@ Mapse.get_kgrid
 Mapse.get_zgrid
 Mapse.get_emulator_description
 Mapse.load_emulator
+Mapse.HalofitCosmology
+Mapse.halofit_cosmology
+Mapse.halofit_background
+Mapse.halofit_Pmm
+Mapse.get_halofit_Pmm
 ```

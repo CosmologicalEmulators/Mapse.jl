@@ -32,6 +32,7 @@ end
 
 include("neural_networks.jl")
 include("primordial.jl")
+include("halofit.jl")
 
 const trained_emulators = Dict{String, PkEmulator}()
 
@@ -50,6 +51,8 @@ export MapseEmulator, PkEmulator, load_component_emulator, load_emulator,
     TRAINED_EMULATOR_ARTIFACTS, preprocessing_linear_pk_mnuw0wacdm,
     preprocessing_boost_mnuw0wacdm,
     postprocessing_linear_pk_mnuw0wacdm_sym_ratio,
-    postprocessing_boost_log10, trained_emulators
+    postprocessing_boost_log10, trained_emulators,
+    HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm,
+    get_halofit_Pmm
 
 end # module
