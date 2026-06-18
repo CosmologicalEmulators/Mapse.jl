@@ -191,10 +191,20 @@ function get_linear_Pkcb(input_params, z, D, PkEmu::PkEmulator)
     return get_Pk(input_params, z, D, PkEmu.LinearPcb)
 end
 
+"""
+    get_kgrid(Pkemu::AbstractPkEmulators)
+
+Return the k-grid the emulator was trained on.
+"""
 function get_kgrid(Pkemu::AbstractPkEmulators)
     return Pkemu.kgrid
 end
 
+"""
+    get_emulator_description(Pkemu::AbstractPkEmulators)
+
+Print the metadata description stored in the trained emulator, when available.
+"""
 function get_emulator_description(Pkemu::AbstractPkEmulators)
     if haskey(Pkemu.TrainedEmulator.Description, "emulator_description")
         get_emulator_description(Pkemu.TrainedEmulator)

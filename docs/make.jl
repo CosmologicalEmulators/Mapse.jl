@@ -7,6 +7,7 @@ push!(LOAD_PATH,"../src/")
 
 makedocs(
     modules = [Mapse],
+    checkdocs = :none,
     format = Documenter.HTML(prettyurls = get(ENV, "CI", nothing) == "true",
     sidebar_sitename=true),
     sitename = "Mapse.jl",

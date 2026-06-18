@@ -1,10 +1,10 @@
 # API reference
 
 ```@docs
-Mapse.LinearPkEmulator
+Mapse.MapseEmulator
+Mapse.PkEmulator
 Mapse.get_Pk
 Mapse.get_kgrid
-Mapse.get_zgrid
 Mapse.get_emulator_description
 Mapse.load_emulator
 Mapse.HalofitCosmology
