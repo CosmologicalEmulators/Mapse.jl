@@ -1,12 +1,10 @@
 using Test
 using NPZ
+using DelimitedFiles
 using SimpleChains
 using Static
 using Mapse
 using DataInterpolations
-
-const RUN_REACTANT_TESTS = lowercase(get(ENV, "MAPSE_TEST_REACTANT", "false")) in
-                           ("1", "true", "yes")
 
 mlpd = SimpleChain(
   static(6),
@@ -113,13 +111,24 @@ x3 = Array(LinRange(-1., 1., 100))
 
     full_pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], full_emu)
     @test size(full_pk_vector) == (40, 2)
+    @test Mapse.get_kgrid(full_emu) == k_test
+    @test isnothing(Mapse.get_emulator_description(full_emu))
 
+    truncated_boost_postprocessing = (input, output, D, emu) -> output[1:length(Mapse.get_kgrid(emu))]
     bad_boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test[1:end-1],
                                     InMinMax = inminmax, OutMinMax = outminmax,
                                     Preprocessing = preprocessing,
-                                    Postprocessing = postprocessing_boost)
+                                    Postprocessing = truncated_boost_postprocessing)
     bad_full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPcb = pkcb_emu, Boost = bad_boost_emu)
-    @test_throws DimensionMismatch Mapse.get_Pk(x, 1.0, 1.0, bad_full_emu)
+    @test size(Mapse.get_Pk(x, 1.0, 1.0, bad_full_emu)) == (39,)
+
+    out_of_range_boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test .+ 1_000,
+                                    InMinMax = inminmax, OutMinMax = outminmax,
+                                    Preprocessing = preprocessing,
+                                    Postprocessing = postprocessing_boost)
+    out_of_range_full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPcb = pkcb_emu,
+                                             Boost = out_of_range_boost_emu)
+    @test_throws ArgumentError Mapse.get_Pk(x, 1.0, 1.0, out_of_range_full_emu)
 
     # Test get_linear_Pmm and get_linear_Pkcb
     linear_pmm_scalar = Mapse.get_linear_Pmm(x, 1.0, 1.0, full_emu)
@@ -151,11 +160,17 @@ x3 = Array(LinRange(-1., 1., 100))
     @test Mapse.DEFAULT_EMULATOR_ARTIFACT == "mnuw0wacdm_class"
     @test Mapse.TRAINED_EMULATOR_ARTIFACTS[Mapse.DEFAULT_EMULATOR_NAME] == Mapse.DEFAULT_EMULATOR_ARTIFACT
     @test haskey(Mapse.trained_emulators, Mapse.DEFAULT_EMULATOR_NAME)
-    @test Mapse.trained_emulators[Mapse.DEFAULT_EMULATOR_NAME] isa Mapse.PkEmulator
+    artifact_emu = Mapse.trained_emulators[Mapse.DEFAULT_EMULATOR_NAME]
+    @test artifact_emu isa Mapse.PkEmulator
+    @test Mapse.get_kgrid(artifact_emu) == Mapse.get_kgrid(artifact_emu.Boost)
+    @test isnothing(Mapse.get_emulator_description(artifact_emu))
+    artifact_params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
+    artifact_pk = Mapse.get_Pk(artifact_params, 0.0, 1.0, artifact_emu)
+    @test size(artifact_pk) == (length(Mapse.get_kgrid(artifact_emu)),)
+    @test all(isfinite, artifact_pk)
     artifacts_toml = read(Mapse.ARTIFACTS_TOML, String)
     @test occursin("git-tree-sha1 = \"c1a93f08faafd81f6c62ac3ee97bb9fe37f8cf2e\"", artifacts_toml)
     @test occursin("zenodo.org/records/20646263", artifacts_toml)
-    @test !occursin("lazy = true", artifacts_toml)
 
     primitive_output = ones(3)
     primitive_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=[0.1, 0.2, 0.3],
@@ -218,6 +233,18 @@ x3 = Array(LinRange(-1., 1., 100))
     @test_throws DimensionMismatch Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k,
                                                      halofit_pk_lin, halofit_Ωm_z[1:1],
                                                      halofit_Ωv_z)
+
+    class_reference = readdlm(joinpath(@__DIR__, "data", "halofit_class_reference.txt"), comments=true)
+    class_z = unique(class_reference[:, 1])
+    class_k = class_reference[class_reference[:, 1] .== class_z[1], 2]
+    class_pk_lin = reshape(class_reference[:, 3], length(class_k), length(class_z))
+    class_Ωm_z = [class_reference[findfirst(==(z), class_reference[:, 1]), 4] for z in class_z]
+    class_Ωv_z = [class_reference[findfirst(==(z), class_reference[:, 1]), 5] for z in class_z]
+    class_pk_nl = reshape(class_reference[:, 6], length(class_k), length(class_z))
+    class_params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
+    mapse_class_pk_nl = Mapse.halofit_Pmm(class_params, class_z, class_k, class_pk_lin,
+                                          class_Ωm_z, class_Ωv_z)
+    @test mapse_class_pk_nl ≈ class_pk_nl rtol=6e-3
 
     mktempdir() do dir
         Mapse.save_pca_metadata(dir, compression.mean, compression.basis)
@@ -334,6 +361,4 @@ x3 = Array(LinRange(-1., 1., 100))
     end
 end
 
-if RUN_REACTANT_TESTS
-    include("test_halofit_reactant.jl")
-end
+include("test_halofit_reactant.jl")

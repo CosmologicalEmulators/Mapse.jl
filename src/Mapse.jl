@@ -10,6 +10,7 @@ import NPZ: npzread, npzwrite
 using Statistics
 using OrdinaryDiffEqTsit5
 using Integrals
+# Loaded to activate AbstractCosmologicalEmulators.BackgroundCosmologyExt.
 using FastGaussQuadrature
 using LinearAlgebra
 using SciMLSensitivity

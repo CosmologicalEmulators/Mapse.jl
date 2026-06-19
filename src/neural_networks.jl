@@ -177,10 +177,11 @@ Computes the final non-linear matter power spectrum.
 Returns ``P_{mm, lin}(k, z) \times Boost(k, z)``.
 """
 function get_Pk(input_params, z, D, PkEmu::PkEmulator)
-    _validate_compatible_pk_grids(PkEmu)
     lin_pmm = get_Pk(input_params, z, D, PkEmu.LinearPmm)
     boost = get_Pk(input_params, z, D, PkEmu.Boost)
-    return lin_pmm .* boost
+    lin_pmm_on_boost_grid = _interpolate_pk_to_grid(get_kgrid(PkEmu.LinearPmm), lin_pmm,
+                                                     get_kgrid(PkEmu.Boost))
+    return lin_pmm_on_boost_grid .* boost
 end
 
 function get_linear_Pmm(input_params, z, D, PkEmu::PkEmulator)
@@ -200,6 +201,10 @@ function get_kgrid(Pkemu::AbstractPkEmulators)
     return Pkemu.kgrid
 end
 
+function get_kgrid(PkEmu::PkEmulator)
+    return get_kgrid(PkEmu.Boost)
+end
+
 """
     get_emulator_description(Pkemu::AbstractPkEmulators)
 
@@ -211,6 +216,16 @@ function get_emulator_description(Pkemu::AbstractPkEmulators)
     else
         @warn "No emulator description found!"
     end
+    return nothing
+end
+
+function get_emulator_description(PkEmu::PkEmulator)
+    println("Linear total-matter emulator:")
+    get_emulator_description(PkEmu.LinearPmm)
+    println("Linear cold+baryon emulator:")
+    get_emulator_description(PkEmu.LinearPcb)
+    println("Nonlinear boost emulator:")
+    get_emulator_description(PkEmu.Boost)
     return nothing
 end
 
@@ -308,26 +323,49 @@ function _validate_component_shapes(path::String, k, inminmax, outminmax,
     return nothing
 end
 
-function _validate_compatible_pk_grids(PkEmu::PkEmulator)
-    linear_k = get_kgrid(PkEmu.LinearPmm)
-    boost_k = get_kgrid(PkEmu.Boost)
+function _interpolate_vector_to_grid(x::AbstractVector, y::AbstractVector, xnew::AbstractVector)
+    length(x) == length(y) || throw(DimensionMismatch(
+        "interpolation input grid has length $(length(x)) but values have length $(length(y))."
+    ))
+    all(diff(x) .> 0) || throw(ArgumentError("interpolation input grid must be strictly increasing."))
+    all(diff(xnew) .> 0) || throw(ArgumentError("interpolation output grid must be strictly increasing."))
+    first(xnew) >= first(x) && last(xnew) <= last(x) || throw(ArgumentError(
+        "cannot interpolate from k range [$(first(x)), $(last(x))] to [$(first(xnew)), $(last(xnew))]."
+    ))
 
-    if length(linear_k) != length(boost_k)
-        throw(DimensionMismatch(
-            "Cannot compute nonlinear P(k): LinearPmm grid has $(length(linear_k)) points " *
-            "but Boost grid has $(length(boost_k)) points. Use get_linear_Pmm/get_linear_Pkcb, " *
-            "or provide a boost emulator on the same k-grid."
-        ))
+    out = similar(y, promote_type(eltype(x), eltype(y), eltype(xnew)), length(xnew))
+    for (i, xi) in pairs(xnew)
+        j = searchsortedlast(x, xi)
+        if j == 0
+            out[i] = y[begin]
+        elseif j >= length(x)
+            out[i] = y[end]
+        elseif x[j] == xi
+            out[i] = y[j]
+        else
+            weight = (xi - x[j]) / (x[j + 1] - x[j])
+            out[i] = (one(weight) - weight) * y[j] + weight * y[j + 1]
+        end
     end
+    return out
+end
 
-    if !all(linear_k .== boost_k)
-        throw(ArgumentError(
-            "Cannot compute nonlinear P(k): LinearPmm and Boost k-grids have the same length " *
-            "but different values. Use matching component artifacts or interpolate explicitly before multiplying."
-        ))
+function _interpolate_pk_to_grid(x::AbstractVector, y::AbstractVector, xnew::AbstractVector)
+    return length(x) == length(xnew) && all(x .== xnew) ? y : _interpolate_vector_to_grid(x, y, xnew)
+end
+
+function _interpolate_pk_to_grid(x::AbstractVector, y::AbstractMatrix, xnew::AbstractVector)
+    if length(x) == length(xnew) && all(x .== xnew)
+        return y
     end
-
-    return nothing
+    size(y, 1) == length(x) || throw(DimensionMismatch(
+        "interpolation input grid has length $(length(x)) but matrix has $(size(y, 1)) rows."
+    ))
+    out = similar(y, promote_type(eltype(x), eltype(y), eltype(xnew)), length(xnew), size(y, 2))
+    for col in axes(y, 2)
+        out[:, col] = _interpolate_vector_to_grid(x, view(y, :, col), xnew)
+    end
+    return out
 end
 
 function _load_preset(preset::Nothing)

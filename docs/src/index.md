@@ -21,10 +21,17 @@ In the reminder of this section we are showing how to do this.
 
 ### Instantiation
 
-The most direct way to instantiate an official trained emulators is given by the following one-liner
+The most direct way to instantiate an official trained emulator is to use the bundled
+artifact-backed cache populated when `Mapse` is imported:
 
 ```julia
-Pk_emu = Mapse.load_emulator(weights_folder);
+Pk_emu = Mapse.trained_emulators[Mapse.DEFAULT_EMULATOR_NAME]
+```
+
+To load an emulator from a local directory instead, use
+
+```julia
+Pk_emu = Mapse.load_emulator(weights_folder)
 ```
 
 where `weights_folder` is the path to the folder containing the files required to build up the network.
@@ -34,10 +41,10 @@ It is possible to pass an additional argument to the previous function, which is
 - [SimpleChains](https://github.com/PumasAI/SimpleChains.jl), which is taylored for small NN running on a CPU
 - [Lux](https://github.com/LuxDL/Lux.jl), which can run both on CPUs and GPUs
 
-`SimpleChains.jl` is faster expecially for small NNs on the CPU. If you wanna use something running on a GPU, you should use `Lux.jl`, which can be loaded adding an additional argument to the `load_emulator` function, `Capse.LuxEmulator`
+`SimpleChains.jl` is faster expecially for small NNs on the CPU. If you wanna use something running on a GPU, you should use `Lux.jl`, which can be loaded adding an additional argument to the `load_emulator` function, `Mapse.LuxEmulator`
 
 ```julia
-Pk_emu = Capse.load_emulator(weights_folder, emu = Mapse.LuxEmulator);
+Pk_emu = Mapse.load_emulator(weights_folder, emu = Mapse.LuxEmulator)
 ```
 
 Each trained emulator should be shipped with a description within the JSON file. In order to print the description, just run:
@@ -52,13 +59,25 @@ Mapse.get_emulator_description(Pk_emu)
     responsability to check the right ordering, by reading the output of the
     `get_emulator_description` method.
 
-After loading a trained emulator, feed it some input parameters `x` in order to get the
-emulated $P(k,z)$'s
+After loading a trained emulator, feed it cosmological parameters, redshift, and
+the linear growth factor `D(z)` in order to get the emulated nonlinear
+``P_{mm}(k,z)``. The official `mnuw0wacdm_class` emulator expects parameters in
+the order `[ln10As, ns, H0, ωb, ωc, Mν, w0, wa]`.
 
 ```julia
-x = rand(6) # generate some random input
-Mapse.get_Pk(x, Pk_emu) #compute the Pk's
+params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
+z = 0.0
+D = 1.0
+k = Mapse.get_kgrid(Pk_emu)
+pk_nonlinear = Mapse.get_Pk(params, z, D, Pk_emu)
 ```
+
+`Mapse.get_kgrid(Pk_emu)` returns the output grid of the top-level nonlinear
+emulator. Linear helper methods such as `Mapse.get_linear_Pmm` use their own
+component grid.
+
+For vector redshifts, pass a vector of matching growth factors, e.g.
+`Mapse.get_Pk(params, [0.0, 1.0], [1.0, 0.6], Pk_emu)`.
 
 ### Halofit and Reactant
 
