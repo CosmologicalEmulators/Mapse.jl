@@ -200,7 +200,7 @@ x3 = Array(LinRange(-1., 1., 100))
     @test size(halofit_Ωv_z) == size(halofit_z)
     @test Mapse.halofit_background(halofit_cosmo, halofit_z[1]) == (halofit_Ωm_z[1], halofit_Ωv_z[1])
 
-    halofit_pk_nl = Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin)
+    halofit_pk_nl = @inferred Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin)
     halofit_pk_nl_unchecked = @inferred Mapse._halofit_Pmm_unchecked(halofit_cosmo,
                                                                      halofit_z,
                                                                      halofit_k,
@@ -222,10 +222,10 @@ x3 = Array(LinRange(-1., 1., 100))
     @test halofit_pk_nl_external_bg ≈ halofit_pk_nl
     @test all(isfinite, halofit_pk_nl)
     @test all(>(0), halofit_pk_nl)
-    @test Mapse.halofit_Pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1]) ≈ halofit_pk_nl[:, 1]
+    @test (@inferred Mapse.halofit_Pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1])) ≈ halofit_pk_nl[:, 1]
     @test Mapse.halofit_Pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1],
                             halofit_Ωm_z[1], halofit_Ωv_z[1]) ≈ halofit_pk_nl[:, 1]
-    @test size(Mapse.halofit_Pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin)) == size(halofit_pk_lin)
+    @test size(@inferred(Mapse.halofit_Pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin))) == size(halofit_pk_lin)
     @test Mapse.halofit_Pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin,
                             halofit_Ωm_z, halofit_Ωv_z) ≈ halofit_pk_nl
     @test_throws ArgumentError Mapse.halofit_Pmm(halofit_cosmo, halofit_z, reverse(halofit_k), halofit_pk_lin)

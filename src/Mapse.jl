@@ -38,6 +38,7 @@ include("halofit.jl")
 const trained_emulators = Dict{String, PkEmulator}()
 
 function __init__()
+    _init_halofit_Fν_spline!()
     empty!(trained_emulators)
     for (emulator_name, artifact_name) in TRAINED_EMULATOR_ARTIFACTS
         trained_emulators[emulator_name] = load_emulator_from_artifact(artifact_name)

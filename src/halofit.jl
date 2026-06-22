@@ -68,11 +68,19 @@ function halofit_cosmology(input_params::AbstractVector; Ωr0=nothing, ΩΛ0=not
     )
 end
 
+const _HALOFIT_Fν_SPLINE_TYPE = AkimaSpline{Vector{Float64}, Vector{Float64}, Vector{Float64}, Vector{Float64}, Vector{Float64}}
+const _HALOFIT_Fν_SPLINE = Ref{_HALOFIT_Fν_SPLINE_TYPE}()
+
+function _init_halofit_Fν_spline!()
+    itp = ext.F_interpolant[]
+    _HALOFIT_Fν_SPLINE[] = AkimaSpline(getfield(itp, :u), getfield(itp, :t))
+    return nothing
+end
+
 function _halofit_Fν(y::Real)
-    y == 0 && return 7π^4 / 120
-    integrand(x, p) = x^2 * sqrt(x^2 + p^2) / (1 + exp(x))
-    prob = IntegralProblem(integrand, (zero(float(y)), Inf), y; reltol=1e-10)
-    return solve(prob, QuadGKJL())[1]
+    yy = float(y)
+    T = typeof(yy)
+    return convert(T, _HALOFIT_Fν_SPLINE[](yy))::T
 end
 
 function _halofit_background_z(cpar::HalofitCosmology, z::Real)
