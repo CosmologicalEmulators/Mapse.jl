@@ -1,7 +1,7 @@
 name = "Mapse"
 uuid = "8a74af7f-8333-416a-8f03-989ffaa4680e"
-authors = ["marcobonici <bonici.marco@gmail.com>"]
 version = "0.1.0"
+authors = ["marcobonici <bonici.marco@gmail.com>"]
 
 [deps]
 AbstractCosmologicalEmulators = "c83c1981-e5c4-4837-9eb8-c9b1572acfc6"
@@ -15,8 +15,8 @@ OrdinaryDiffEqTsit5 = "b1df2697-797e-41e3-8120-5422d3b24e4a"
 [compat]
 AbstractCosmologicalEmulators = "0.6"
 Adapt = "3, 4"
-DataInterpolations = "7"
+DataInterpolations = "7, 9"
+Integrals = "4"
 JSON = "0.21"
 NPZ = "0.4"
 OrdinaryDiffEqTsit5 = "1"
-Integrals = "4"
