@@ -22,7 +22,6 @@ weights = SimpleChains.init_params(mlpd)
 inminmax = rand(6,2)
 outminmax = rand(40,2)
 a, Ωcb0, mν, h, w0, wa = [1., 0.3, 0.06, 0.67, -1.1, 0.2]
-#a, Ωcb0, mν, h, w0, wa = [1., 0.3, 0.06, 0.67, -1.1, 0.2]
 z = Array(LinRange(0., 3., 100))
 
 emu = Mapse.SimpleChainsEmulator(Architecture = mlpd, Weights = weights)
@@ -30,21 +29,10 @@ emu = Mapse.SimpleChainsEmulator(Architecture = mlpd, Weights = weights)
 postprocessing = (input, output, D, Pkemu) -> output
 preprocessing = (input) -> input
 
-effort_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=k_test,
+effort_emu = Mapse.TransferFunctionEmulator(TrainedEmulator = emu, kgrid=k_test,
                                 InMinMax = inminmax, OutMinMax = outminmax,
                                 Preprocessing = preprocessing,
                                 Postprocessing = postprocessing)
-
-pkcb_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=k_test,
-                                InMinMax = inminmax, OutMinMax = outminmax,
-                                Preprocessing = preprocessing,
-                                Postprocessing = postprocessing)
-
-postprocessing_boost = (input, output, D, emu) -> output
-boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test,
-                                InMinMax = inminmax, OutMinMax = outminmax,
-                                Preprocessing = preprocessing,
-                                Postprocessing = postprocessing_boost)
 
 x = [Ωcb0, h, mν, w0, wa]
 
@@ -74,13 +62,6 @@ x3 = Array(LinRange(-1., 1., 100))
 
 @testset "Mapse tests" begin
     @test isapprox(Mapse.E_a(1, Ωcb0, h), 1.)
-    #@test isapprox(Zygote.gradient(x->D_z_x(z, x), x)[1], ForwardDiff.gradient(x->D_z_x(z, x), x), rtol=1e-5)
-    #@test isapprox(grad(central_fdm(5,1), x->D_z_x(z, x), x)[1], ForwardDiff.gradient(x->D_z_x(z, x), x), rtol=1e-3)
-    #@test isapprox(Zygote.gradient(x->f_z_x(z, x), x)[1], ForwardDiff.gradient(x->f_z_x(z, x), x), rtol=1e-5)
-    #@test isapprox(grad(central_fdm(5,1), x->f_z_x(z, x), x)[1], ForwardDiff.gradient(x->f_z_x(z, x), x), rtol=1e-4)
-    #@test isapprox(grad(central_fdm(5,1), x->r_z_x(3., x), x)[1], ForwardDiff.gradient(x->r_z_x(3., x), x), rtol=1e-7)
-    #@test isapprox(Zygote.gradient(x->r_z_x(3., x), x)[1], ForwardDiff.gradient(x->r_z_x(3., x), x), rtol=1e-6)
-    #@test isapprox(Zygote.gradient(x->r_z_x(3., x), x)[1], Zygote.gradient(x->r_z_check_x(3., x), x)[1], rtol=1e-7)
     D, f = Mapse.D_f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa)
     @test isapprox(D, Mapse.D_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
     @test isapprox(f, Mapse.f_z(z, Ωcb0, h; mν =mν, w0=w0, wa=wa))
@@ -96,47 +77,6 @@ x3 = Array(LinRange(-1., 1., 100))
     pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], effort_emu)
     @test size(pk_vector) == (40, 2)
 
-    # Test get_Pk for Boost
-    boost_scalar = Mapse.get_Pk(x, 1.0, boost_emu)
-    @test size(boost_scalar) == (40,)
-
-    boost_vector = Mapse.get_Pk(x, [0.5, 1.0], boost_emu)
-    @test size(boost_vector) == (40, 2)
-
-    # Test PkEmulator (Combined)
-    full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPcb = pkcb_emu, Boost = boost_emu)
-
-    full_pk_scalar = Mapse.get_Pk(x, 1.0, 1.0, full_emu)
-    @test size(full_pk_scalar) == (40,)
-
-    full_pk_vector = Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], full_emu)
-    @test size(full_pk_vector) == (40, 2)
-    @test Mapse.get_kgrid(full_emu) == k_test
-    @test isnothing(Mapse.get_emulator_description(full_emu))
-
-    truncated_boost_postprocessing = (input, output, D, emu) -> output[1:length(Mapse.get_kgrid(emu))]
-    bad_boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test[1:end-1],
-                                    InMinMax = inminmax, OutMinMax = outminmax,
-                                    Preprocessing = preprocessing,
-                                    Postprocessing = truncated_boost_postprocessing)
-    bad_full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPcb = pkcb_emu, Boost = bad_boost_emu)
-    @test size(Mapse.get_Pk(x, 1.0, 1.0, bad_full_emu)) == (39,)
-
-    out_of_range_boost_emu = Mapse.NonLinearBoostPkEmulator(TrainedEmulator = emu, kgrid=k_test .+ 1_000,
-                                    InMinMax = inminmax, OutMinMax = outminmax,
-                                    Preprocessing = preprocessing,
-                                    Postprocessing = postprocessing_boost)
-    out_of_range_full_emu = Mapse.PkEmulator(LinearPmm = effort_emu, LinearPcb = pkcb_emu,
-                                             Boost = out_of_range_boost_emu)
-    @test_throws ArgumentError Mapse.get_Pk(x, 1.0, 1.0, out_of_range_full_emu)
-
-    # Test get_linear_Pmm and get_linear_Pkcb
-    linear_pmm_scalar = Mapse.get_linear_Pmm(x, 1.0, 1.0, full_emu)
-    @test linear_pmm_scalar == Mapse.get_Pk(x, 1.0, 1.0, effort_emu)
-
-    linear_pkcb_vector = Mapse.get_linear_Pkcb(x, [0.5, 1.0], [1.0, 1.0], full_emu)
-    @test linear_pkcb_vector == Mapse.get_Pk(x, [0.5, 1.0], [1.0, 1.0], pkcb_emu)
-
     # Test PCA reconstruction used by compressed MAPSE artifacts.
     compression = Mapse.PCACompression(
         mean = [10.0, 20.0, 30.0],
@@ -150,30 +90,50 @@ x3 = Array(LinRange(-1., 1., 100))
     @test Mapse.reconstruct([2.0 3.0; 4.0 5.0], compression) ≈ [12.0 13.0; 24.0 25.0; 36.0 38.0]
 
     @test Mapse.preprocessing_linear_pk_mnuw0wacdm(collect(1:8)) == collect(3:8)
-    @test Mapse.preprocessing_boost_mnuw0wacdm(collect(1:8)) == collect(1:8)
-    @test haskey(Mapse.LOAD_PRESETS, :mnuw0wacdm_class)
+    @test haskey(Mapse.LOAD_PRESETS, :mnuw0wacdm_linear)
     @test Mapse.BUILTIN_PREPROCESSING["linear_pk_mnuw0wacdm"] === Mapse.preprocessing_linear_pk_mnuw0wacdm
-    @test Mapse.BUILTIN_PREPROCESSING["boost_mnuw0wacdm"] === Mapse.preprocessing_boost_mnuw0wacdm
     @test Mapse.BUILTIN_POSTPROCESSING["linear_pk_mnuw0wacdm_sym_ratio"] === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
-    @test Mapse.BUILTIN_POSTPROCESSING["boost_log10"] === Mapse.postprocessing_boost_log10
     @test Mapse.DEFAULT_EMULATOR_NAME == "mnuw0wacdm_class"
     @test Mapse.DEFAULT_EMULATOR_ARTIFACT == "mnuw0wacdm_class"
-    @test Mapse.TRAINED_EMULATOR_ARTIFACTS[Mapse.DEFAULT_EMULATOR_NAME] == Mapse.DEFAULT_EMULATOR_ARTIFACT
-    @test haskey(Mapse.trained_emulators, Mapse.DEFAULT_EMULATOR_NAME)
-    artifact_emu = Mapse.trained_emulators[Mapse.DEFAULT_EMULATOR_NAME]
-    @test artifact_emu isa Mapse.PkEmulator
-    @test Mapse.get_kgrid(artifact_emu) == Mapse.get_kgrid(artifact_emu.Boost)
-    @test isnothing(Mapse.get_emulator_description(artifact_emu))
+
+    # Artifact-based component loading tests
+    artifact_root = Mapse.artifact_path(Mapse.DEFAULT_EMULATOR_ARTIFACT)
+    # Stricter load_emulator validation tests
+    @test_throws ArgumentError Mapse.load_emulator(artifact_root)
+    @test_throws ArgumentError Mapse.load_emulator(tempname())
+
+    artifact_pmm_emu = Mapse.load_emulator(joinpath(artifact_root, "Pk_lin_mm"); preset=:mnuw0wacdm_linear)
+    artifact_pcb_emu = Mapse.load_emulator(joinpath(artifact_root, "Pk_lin_cb"); preset=:mnuw0wacdm_linear)
+
     artifact_params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
-    artifact_pk = Mapse.get_Pk(artifact_params, 0.0, 1.0, artifact_emu)
-    @test size(artifact_pk) == (length(Mapse.get_kgrid(artifact_emu)),)
-    @test all(isfinite, artifact_pk)
+    artifact_pk_mm = Mapse.get_Pk(artifact_params, 0.0, 1.0, artifact_pmm_emu)
+    @test size(artifact_pk_mm) == (length(Mapse.get_kgrid(artifact_pmm_emu)),)
+    @test all(isfinite, artifact_pk_mm)
+
+    artifact_pk_cb = Mapse.get_Pk(artifact_params, 0.0, 1.0, artifact_pcb_emu)
+    @test size(artifact_pk_cb) == (length(Mapse.get_kgrid(artifact_pcb_emu)),)
+    @test all(isfinite, artifact_pk_cb)
+
+    # Halofit on linear emulator output
+    artifact_k_lin = Mapse.get_kgrid(artifact_pmm_emu)
+    artifact_halofit_pk = Mapse.halofit_Pmm(artifact_params, 0.0, artifact_k_lin, artifact_pk_mm)
+    @test size(artifact_halofit_pk) == (length(artifact_k_lin),)
+    @test all(isfinite, artifact_halofit_pk)
+    @test all(>(0), artifact_halofit_pk)
+
+    # Vector redshift workflow
+    artifact_z_vec = [0.0, 0.5]
+    artifact_D_vec = [1.0, 0.75]
+    artifact_pk_vec = Mapse.get_Pk(artifact_params, artifact_z_vec, artifact_D_vec, artifact_pmm_emu)
+    @test size(artifact_pk_vec) == (length(artifact_k_lin), length(artifact_z_vec))
+    @test all(isfinite, artifact_pk_vec)
+
     artifacts_toml = read(Mapse.ARTIFACTS_TOML, String)
     @test occursin("git-tree-sha1 = \"c1a93f08faafd81f6c62ac3ee97bb9fe37f8cf2e\"", artifacts_toml)
     @test occursin("zenodo.org/records/20646263", artifacts_toml)
 
     primitive_output = ones(3)
-    primitive_emu = Mapse.MapseEmulator(TrainedEmulator = emu, kgrid=[0.1, 0.2, 0.3],
+    primitive_emu = Mapse.TransferFunctionEmulator(TrainedEmulator = emu, kgrid=[0.1, 0.2, 0.3],
                                         InMinMax = inminmax, OutMinMax = outminmax,
                                         Preprocessing = preprocessing,
                                         Postprocessing = postprocessing)
@@ -184,7 +144,6 @@ x3 = Array(LinRange(-1., 1., 100))
     @test size(vector_post) == (3, 2)
     @test vector_post[:, 1] ≈ scalar_post
     @test vector_post[:, 2] ≈ scalar_post .* (3.0 / 2.0)^2
-    @test Mapse.postprocessing_boost_log10(primitive_params, [0.0, 1.0, 2.0], nothing, primitive_emu) ≈ [1.0, 10.0, 100.0]
 
     halofit_params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
     halofit_cosmo = @inferred Mapse.halofit_cosmology(halofit_params)
@@ -236,7 +195,7 @@ x3 = Array(LinRange(-1., 1., 100))
 
     class_reference = readdlm(joinpath(@__DIR__, "data", "halofit_class_reference.txt"), comments=true)
     class_z = unique(class_reference[:, 1])
-    class_k = class_reference[class_reference[:, 1] .== class_z[1], 2]
+    class_k = class_reference[class_reference[:, 1] .== class_z[0+1], 2]
     class_pk_lin = reshape(class_reference[:, 3], length(class_k), length(class_z))
     class_Ωm_z = [class_reference[findfirst(==(z), class_reference[:, 1]), 4] for z in class_z]
     class_Ωv_z = [class_reference[findfirst(==(z), class_reference[:, 1]), 5] for z in class_z]
@@ -245,6 +204,70 @@ x3 = Array(LinRange(-1., 1., 100))
     mapse_class_pk_nl = Mapse.halofit_Pmm(class_params, class_z, class_k, class_pk_lin,
                                           class_Ωm_z, class_Ωv_z)
     @test mapse_class_pk_nl ≈ class_pk_nl rtol=6e-3
+
+    hmcode_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_camb_reference.txt"), comments=true)
+    hmcode_z = unique(hmcode_reference[:, 1])
+    hmcode_k = hmcode_reference[hmcode_reference[:, 1] .== hmcode_z[1], 2]
+    hmcode_pk_mm = reshape(hmcode_reference[:, 3], length(hmcode_k), length(hmcode_z))
+    hmcode_pk_cb = reshape(hmcode_reference[:, 4], length(hmcode_k), length(hmcode_z))
+    hmcode_boost_ref = reshape(hmcode_reference[:, 6], length(hmcode_k), length(hmcode_z))
+    hmcode_h = 0.6736
+    hmcode_Ωb = 0.02237 / hmcode_h^2
+    hmcode_Ων = 0.06 / (93.14 * hmcode_h^2)
+    hmcode_Ωm = hmcode_Ωb + 0.12 / hmcode_h^2 + hmcode_Ων
+    hmcode_cosmo = Mapse.HMCodeCosmology(hmcode_Ωm, hmcode_Ωb, hmcode_h, 0.9649,
+                                         0.8109118, -1.0, 0.0, hmcode_Ων, 0.0)
+    hmcode_boost = Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
+                                      hmcode_pk_cb;
+                                      nM=256, threaded=false)
+    @test size(hmcode_boost) == size(hmcode_pk_mm)
+    @test all(isfinite, hmcode_boost)
+    @test hmcode_boost ≈ hmcode_boost_ref rtol=3e-3
+    @test Mapse.hmcode_Pmm(hmcode_cosmo, 0.0, hmcode_k, hmcode_pk_mm[:, 1],
+                           hmcode_pk_cb[:, 1]; nM=64, threaded=false) ./ hmcode_pk_mm[:, 1] ≈
+          Mapse.hmcode_boost(hmcode_cosmo, 0.0, hmcode_k, hmcode_pk_mm[:, 1],
+                             hmcode_pk_cb[:, 1];
+                             nM=64, threaded=false)
+    @test Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm;
+                             pk_cb_z=hmcode_pk_cb, nM=64, threaded=false) ≈
+          Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
+                             hmcode_pk_cb; nM=64, threaded=false)
+    @test Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
+                             hmcode_pk_cb; accuracy=0.25, threaded=false) ≈
+          Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
+                             hmcode_pk_cb; nM=64, threaded=false)
+    @test Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_k,
+                             hmcode_pk_mm; pk_cb_support_z=hmcode_pk_cb,
+                             nM=64, threaded=false) ≈
+          Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
+                             hmcode_pk_cb; nM=64, threaded=false)
+    hmcode_kout = hmcode_k[1:2:end]
+    hmcode_pk_nl_kout = Mapse.hmcode_Pmm(hmcode_cosmo, hmcode_z, hmcode_kout,
+                                         hmcode_k, hmcode_pk_mm;
+                                         pk_cb_support_z=hmcode_pk_cb,
+                                         nM=64, threaded=false)
+    hmcode_boost_kout = Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_kout,
+                                           hmcode_k, hmcode_pk_mm;
+                                           pk_cb_support_z=hmcode_pk_cb,
+                                           nM=64, threaded=false)
+    @test size(hmcode_pk_nl_kout) == (length(hmcode_kout), length(hmcode_z))
+    @test hmcode_boost_kout ≈ hmcode_pk_nl_kout ./ hmcode_pk_mm[1:2:end, :]
+    @test Mapse.hmcode_Pmm(hmcode_cosmo, 0.0, hmcode_kout, hmcode_pk_mm[:, 1];
+                           k_support=hmcode_k, pk_cb_support=hmcode_pk_cb[:, 1],
+                           nM=64, threaded=false) ≈ hmcode_pk_nl_kout[:, 1]
+    @test_throws ArgumentError Mapse.hmcode_Pmm(hmcode_cosmo, hmcode_z, reverse(hmcode_k), hmcode_pk_mm)
+    @test_throws DimensionMismatch Mapse.hmcode_Pmm(hmcode_cosmo, [0.0, 1.0], hmcode_k, hmcode_pk_mm)
+    @test_throws DimensionMismatch Mapse.hmcode_Pmm(hmcode_cosmo, hmcode_z, hmcode_k,
+                                                    hmcode_pk_mm, hmcode_pk_cb[1:end-1, :])
+    @test_throws ArgumentError Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k,
+                                                  hmcode_pk_mm, hmcode_pk_cb; accuracy=0.0)
+    @test_throws ArgumentError Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k,
+                                                  hmcode_pk_mm, hmcode_pk_cb; nM=64,
+                                                  accuracy=0.25)
+    @test_throws ArgumentError Mapse.hmcode_boost(hmcode_cosmo, hmcode_z,
+                                                  vcat(hmcode_kout, 20.0),
+                                                  hmcode_k, hmcode_pk_mm;
+                                                  pk_cb_support_z=hmcode_pk_cb)
 
     mktempdir() do dir
         Mapse.save_pca_metadata(dir, compression.mean, compression.basis)
@@ -280,7 +303,7 @@ x3 = Array(LinRange(-1., 1., 100))
         npzwrite(joinpath(dir, "pca_mean.npy"), compression.mean)
         npzwrite(joinpath(dir, "pca_basis.npy"), compression.basis)
 
-        loaded_component = Mapse.load_component_emulator(dir; emu=Mapse.SimpleChainsEmulator)
+        loaded_component = Mapse.load_emulator(dir; emu=Mapse.SimpleChainsEmulator)
 
         @test loaded_component.TrainedEmulator.Description["emulator_description"] == Dict{String, Any}()
         @test loaded_component.Compression isa Mapse.PCACompression
@@ -309,56 +332,17 @@ x3 = Array(LinRange(-1., 1., 100))
         npzwrite(joinpath(dir, "inminmax.npy"), hcat(zeros(6), ones(6)))
         npzwrite(joinpath(dir, "outminmax.npy"), hcat(zeros(2), ones(2)))
 
-        loaded_component = Mapse.load_component_emulator(dir; emu=Mapse.SimpleChainsEmulator,
+        loaded_component = Mapse.load_emulator(dir; emu=Mapse.SimpleChainsEmulator,
             preprocessing_name = :identity,
             postprocessing_name = :identity)
 
         @test loaded_component.Preprocessing === identity
         @test loaded_component.Postprocessing === Mapse.BUILTIN_POSTPROCESSING["identity"]
-        @test_throws ArgumentError Mapse.load_component_emulator(dir; emu=Mapse.SimpleChainsEmulator,
+        @test_throws ArgumentError Mapse.load_emulator(dir; emu=Mapse.SimpleChainsEmulator,
             preprocessing_name = :not_a_registered_function,
             postprocessing_name = :identity)
-    end
-
-    mktempdir() do dir
-        function write_minimal_component(component_dir, n_input_features)
-            mkpath(component_dir)
-            open(joinpath(component_dir, "nn_setup.json"), "w") do io
-                write(io, """
-                {
-                    "n_input_features": $(n_input_features),
-                    "n_output_features": 2,
-                    "n_hidden_layers": 1,
-                    "layers": {
-                        "layer_1": {
-                            "n_neurons": 4,
-                            "activation_function": "tanh"
-                        }
-                    }
-                }
-                """)
-            end
-
-            npzwrite(joinpath(component_dir, "weights.npy"), zeros(Float32, n_input_features * 4 + 4 + 4 * 2 + 2))
-            npzwrite(joinpath(component_dir, "k.npy"), [0.1, 0.2])
-            npzwrite(joinpath(component_dir, "inminmax.npy"), hcat(zeros(n_input_features), ones(n_input_features)))
-            npzwrite(joinpath(component_dir, "outminmax.npy"), hcat(zeros(2), ones(2)))
-        end
-
-        write_minimal_component(joinpath(dir, "Pk_lin_mm"), 7)
-        write_minimal_component(joinpath(dir, "Pk_lin_cb"), 7)
-        write_minimal_component(joinpath(dir, "Boost"), 9)
-
-        preset_emu = Mapse.load_emulator(dir; emu=Mapse.SimpleChainsEmulator,
-            preset = :mnuw0wacdm_class)
-
-        @test preset_emu.LinearPmm.Preprocessing === Mapse.preprocessing_linear_pk_mnuw0wacdm
-        @test preset_emu.LinearPcb.Preprocessing === Mapse.preprocessing_linear_pk_mnuw0wacdm
-        @test preset_emu.Boost.Preprocessing === Mapse.preprocessing_boost_mnuw0wacdm
-        @test preset_emu.LinearPmm.Postprocessing === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
-        @test preset_emu.LinearPcb.Postprocessing === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
-        @test preset_emu.Boost.Postprocessing === Mapse.postprocessing_boost_log10
     end
 end
 
 include("test_halofit_reactant.jl")
+include("test_hmcode_reactant.jl")

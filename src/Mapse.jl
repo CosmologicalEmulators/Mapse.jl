@@ -34,27 +34,21 @@ end
 include("neural_networks.jl")
 include("primordial.jl")
 include("halofit.jl")
-
-const trained_emulators = Dict{String, PkEmulator}()
+include("hmcode/HMcode.jl")
+include("hmcode.jl")
 
 function __init__()
     _init_halofit_Fν_spline!()
-    empty!(trained_emulators)
-    for (emulator_name, artifact_name) in TRAINED_EMULATOR_ARTIFACTS
-        trained_emulators[emulator_name] = load_emulator_from_artifact(artifact_name)
-    end
 end
 
-export MapseEmulator, PkEmulator, load_component_emulator, load_emulator,
-    load_emulator_from_artifact, artifact_path,
-    get_Pk, get_linear_Pmm, get_linear_Pkcb, get_kgrid, get_emulator_description,
+export TransferFunctionEmulator, load_emulator,
+    artifact_path,
+    get_Pk, get_kgrid, get_emulator_description,
     compute_pca, save_pca_metadata, BUILTIN_PREPROCESSING, BUILTIN_POSTPROCESSING,
     LOAD_PRESETS, DEFAULT_EMULATOR_NAME, DEFAULT_EMULATOR_ARTIFACT,
     TRAINED_EMULATOR_ARTIFACTS, preprocessing_linear_pk_mnuw0wacdm,
-    preprocessing_boost_mnuw0wacdm,
     postprocessing_linear_pk_mnuw0wacdm_sym_ratio,
-    postprocessing_boost_log10, trained_emulators,
     HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm,
-    get_halofit_Pmm
+    HMCodeCosmology, hmcode_Pmm, hmcode_boost
 
 end # module
