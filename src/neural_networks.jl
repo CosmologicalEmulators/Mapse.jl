@@ -14,65 +14,71 @@ reconstruct(y::AbstractVector, c::PCACompression) = c.mean .+ c.basis * y
 reconstruct(y::AbstractMatrix, c::PCACompression) = c.mean .+ c.basis * y
 
 """
-    preprocessing_linear_pk_mnuw0wacdm(params)
+    preprocessing_drop_primordial_parameters(params)
 
 Preprocessing used by ``mnuw0wacdm`` linear-power-spectrum MAPSE emulators.
 The expected input order is
 ``[ln10As, ns, H0, ombh2, omch2, Mν, w0, wa]``; the linear
 networks receive all parameters except the primordial amplitude and tilt.
 """
-function preprocessing_linear_pk_mnuw0wacdm(params::AbstractVector)
+function preprocessing_drop_primordial_parameters(params::AbstractVector)
     return params[3:end]
 end
 
 """
-    postprocessing_linear_pk_mnuw0wacdm_sym_ratio(params, output, D, emu)
+    lcdm_transfer_function(params, k)
 
-Postprocessing used by ``mnuw0wacdm`` sym-ratio linear-power-spectrum MAPSE
-emulators. It applies the primordial spectrum, the growth factor squared, and
-the analytic ``DIFF^2`` correction used by the matching jaxmapse artifacts.
+Analytic LCDM transfer-function baseline used by the ``lcdm_transfer_ratio``
+MAPSE preprocessing convention. The expected parameter order is
+``[ln10As, ns, H0, ombh2, omch2, Mν, w0, wa]``.
 """
-function postprocessing_linear_pk_mnuw0wacdm_sym_ratio(params::AbstractVector, output, D, emu)
-    ln10As = params[1]
-    ns = params[2]
-    As = exp(ln10As) * 1e-10
-
+function lcdm_transfer_function(params::AbstractVector, k::AbstractVector)
     ωb = params[4]
     ωc = params[5]
     Mν = params[6]
-
-    k = get_kgrid(emu)
-    P_prim = primordial_Pk(As, ns, k)
 
     log10_k = log10.(k)
     ων = Mν / 93.14
     Δω = ωc + ων - ωb
     ωm = ωb + ωc + ων
 
-    DIFF = exp.(0.4971733969600907 .+ (-24.849067935704547 .- log.((((((0.731102574104348 .^ log10_k) .+ Δω) ./ 0.17522861267519874) .^ log10_k) .+ ((63.65597287231169 .^ (log10_k .+ 0.0472474783701488)) .* ((0.9899093975978591 .^ (log10_k ./ (cos.(log10_k ./ ((1.1964213875807956 ^ -2.3661897652294015) ./ cos.(log10_k ./ -1.8173117588773222))) ./ 0.20037856443385513))) ./ (Δω ^ 0.7767030041348179)))) .+ (0.14823981687164764 * ωm))))
+    return exp.(0.4971733969600907 .+ (-24.849067935704547 .- log.((((((0.731102574104348 .^ log10_k) .+ Δω) ./ 0.17522861267519874) .^ log10_k) .+ ((63.65597287231169 .^ (log10_k .+ 0.0472474783701488)) .* ((0.9899093975978591 .^ (log10_k ./ (cos.(log10_k ./ ((1.1964213875807956 ^ -2.3661897652294015) ./ cos.(log10_k ./ -1.8173117588773222))) ./ 0.20037856443385513))) ./ (Δω ^ 0.7767030041348179)))) .+ (0.14823981687164764 * ωm))))
+end
+
+"""
+    postprocessing_lcdm_transfer_ratio(params, output, D, emu)
+
+Postprocessing used by ``mnuw0wacdm`` sym-ratio linear-power-spectrum MAPSE
+emulators. It applies the primordial spectrum, the growth factor squared, and
+the analytic ``DIFF^2`` correction used by the matching jaxmapse artifacts.
+"""
+function postprocessing_lcdm_transfer_ratio(params::AbstractVector, output, D, emu)
+    ln10As = params[1]
+    ns = params[2]
+    As = exp(ln10As) * 1e-10
+
+    k = get_kgrid(emu)
+    P_prim = primordial_Pk(As, ns, k)
+    transfer = lcdm_transfer_function(params, k)
 
     D2 = D isa AbstractVector ? reshape(D .^ 2, 1, :) : D^2
-    return (output .* DIFF .^ 2) .* D2 .* P_prim
+    return (output .* transfer .^ 2) .* D2 .* P_prim
 end
 
 const BUILTIN_PREPROCESSING = Dict{String, Function}(
     "identity" => identity,
-    "linear_pk_mnuw0wacdm" => preprocessing_linear_pk_mnuw0wacdm,
+    "drop_primordial_parameters" => preprocessing_drop_primordial_parameters,
 )
 
 const BUILTIN_POSTPROCESSING = Dict{String, Function}(
     "identity" => (input_params, output, D, emu) -> output,
-    "linear_pk_mnuw0wacdm_sym_ratio" => postprocessing_linear_pk_mnuw0wacdm_sym_ratio,
+    "lcdm_transfer_ratio" => postprocessing_lcdm_transfer_ratio,
 )
 
 const LOAD_PRESETS = Dict{Symbol, NamedTuple}(
     :identity => (
         preprocessing_name = :identity,
         postprocessing_name = :identity,
-    ),
-    :mnuw0wacdm_linear => (
-        preprocessing_name = :linear_pk_mnuw0wacdm,
-        postprocessing_name = :linear_pk_mnuw0wacdm_sym_ratio,
     ),
 )
 
@@ -113,7 +119,7 @@ function get_Pk(input_params, z::Number, D::Union{Number, Nothing}, emu::Transfe
     preprocessed_input = emu.Preprocessing(input_params)
     input = vcat(z, preprocessed_input)
     norm_input = maximin(input, emu.InMinMax)
-    output = Array(run_emulator(norm_input, emu.TrainedEmulator))
+    output = run_emulator(norm_input, emu.TrainedEmulator)
     denorm_output = inv_maximin(output, emu.OutMinMax)
     reconstructed_output = reconstruct(denorm_output, emu.Compression)
     return emu.Postprocessing(input_params, reconstructed_output, D, emu)
@@ -127,7 +133,7 @@ function get_Pk(input_params, z::AbstractVector, D::AbstractVector, emu::Transfe
     preprocessed_input = emu.Preprocessing(input_params)
     input = vcat(reshape(z, 1, :), repeat(preprocessed_input, 1, length(z)))
     norm_input = maximin(input, emu.InMinMax)
-    output = Array(run_emulator(norm_input, emu.TrainedEmulator))
+    output = run_emulator(norm_input, emu.TrainedEmulator)
     denorm_output = inv_maximin(output, emu.OutMinMax)
     reconstructed_output = reconstruct(denorm_output, emu.Compression)
     return emu.Postprocessing(input_params, reconstructed_output, D, emu)

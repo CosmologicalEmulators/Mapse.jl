@@ -328,15 +328,6 @@ function _hmcode_growth_tables_static(cosmo::HMCodeCosmology; lcdm::Bool=false, 
     return a, growth, agrowth
 end
 
-function _hmcode_mass_steps_reactant(nM, accuracy)
-    accuracy > 0 || throw(ArgumentError("HMCode accuracy must be positive."))
-    if nM === nothing
-        return max(16, ceil(Int, 256 * float(accuracy)))
-    end
-    accuracy == 1.0 || throw(ArgumentError("Pass either HMCode accuracy or nM, not both."))
-    nM >= 2 || throw(ArgumentError("HMCode nM must be at least 2."))
-    return Int(nM)
-end
 
 function _hmcode_tophat(x)
     return ifelse.(abs.(x) .< 1.0e-5,
@@ -730,12 +721,11 @@ function _hmcode_assemble_pass(k, z, cosmo::HMCodeCosmology, M, R,
 end
 
 function _hmcode_Pmm_reactant(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
-                              k_support, pk_mm_support_kz::ReactantMat,
-                              pk_cb_support_kz::ReactantMat; T_AGN=10.0^7.8,
-                              Mmin=1.0, Mmax=1.0e18, nM=nothing,
-                              accuracy=1.0)
-    nM_eff = _hmcode_mass_steps_reactant(nM, accuracy)
-    M = exp.(collect(range(log(float(Mmin)), log(float(Mmax)), length=nM_eff)))
+                               k_support, pk_mm_support_kz::ReactantMat,
+                               pk_cb_support_kz::ReactantMat; T_AGN=10.0^7.8,
+                               Mmin=1.0, Mmax=1.0e18, nM=128)
+    nM >= 2 || throw(ArgumentError("HMCode nM must be at least 2."))
+    M = exp.(collect(range(log(float(Mmin)), log(float(Mmax)), length=nM)))
     R = _hmcode_lagrangian_radius(M, cosmo.Omega_m)
     pk_mm_out = _hmcode_loglog_interp_columns(k_support, pk_mm_support_kz, k_out)
     sigma_mz = _hmcode_sigma_grid(k_support, pk_cb_support_kz, R)
@@ -768,13 +758,13 @@ end
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
                     pk_mm_z::ReactantMat; pk_cb_z=nothing, k_support=nothing,
                     pk_cb_support_z=nothing, T_AGN=10.0^7.8, Mmin=1.0,
-                    Mmax=1.0e18, nM=nothing, accuracy=1.0, kwargs...)
+                    Mmax=1.0e18, nM=128, kwargs...)
     k_linear = k_support === nothing ? k : k_support
     pkcb = pk_cb_support_z === nothing ? pk_cb_z : pk_cb_support_z
     pkcb === nothing && (pkcb = pk_mm_z)
     return _hmcode_Pmm_reactant(cosmo, z, k, k_linear, pk_mm_z, pkcb;
                                 T_AGN=T_AGN, Mmin=Mmin, Mmax=Mmax,
-                                nM=nM, accuracy=accuracy)
+                                nM=nM)
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,

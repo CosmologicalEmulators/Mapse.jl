@@ -9,14 +9,19 @@ const DI = DataInterpolations
 struct SigmaREval{F}
     sigma_R::F
     z::Float64
+    iz::Int
 end
 @inline (s::SigmaREval)(R::Float64) = s.sigma_R(R, s.z)
 
 struct PkLinEval{F}
     Pk_lin::F
     z::Float64
+    iz::Int
 end
 @inline (s::PkLinEval)(k::Float64) = s.Pk_lin(k, s.z)
+
+_eval_sigma(f, R, z, iz) = f(R, z)
+_eval_pk(f, k, z, iz) = f(k, z)
 
 const ND_HMCODE = 2.853
 
@@ -105,9 +110,9 @@ function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nt
     g_grid_inv = growth_itp.(a_grid_inv)
     growth_itp_inverse = DI.LinearInterpolation(a_grid_inv, g_grid_inv)
     Sigma = zeros(nM, nz)
-    for iz in 1:nz, iM in 1:nM; Sigma[iM, iz] = sigma_fast(R[iM], zs[iz]); end
+    for iz in 1:nz, iM in 1:nM; Sigma[iM, iz] = _eval_sigma(sigma_fast, R[iM], zs[iz], iz); end
     Pk_lin_mat = zeros(nk, nz)
-    for iz in 1:nz, ik in 1:nk; Pk_lin_mat[ik, iz] = Pk_fast(k[ik], zs[iz]); end
+    for iz in 1:nz, ik in 1:nk; Pk_lin_mat[ik, iz] = _eval_pk(Pk_fast, k[ik], zs[iz], iz); end
     params_tweaks = compute_hmcode_params(k, zs, Pk_fast, sigma_fast, Sigma, R, cosmo, growth_itp; tweaks=true)
     params_notweaks = HMcodeParams(params_tweaks.R_nl, params_tweaks.n_eff, params_tweaks.C_curv, params_tweaks.sigma_v, params_tweaks.Delta_v, params_tweaks.delta_c, zeros(nz), ones(nz), zeros(nz), params_tweaks.k_star, fill(4.0, nz), zeros(nz))
     nu_mat = zeros(nM, nz)
@@ -125,7 +130,9 @@ function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nt
 end
 
 function compute_sigma_grid!(Sigma, R_grid, zs, sigma_R)
-    @inbounds for iz in eachindex(zs), iM in eachindex(R_grid); Sigma[iM, iz] = sigma_R(R_grid[iM], zs[iz]); end
+    @inbounds for iz in eachindex(zs), iM in eachindex(R_grid)
+        Sigma[iM, iz] = _eval_sigma(sigma_R, R_grid[iM], zs[iz], iz)
+    end
     return Sigma
 end
 
@@ -135,7 +142,7 @@ function compute_hmcode_params(k, zs, Pk_lin, sigma_R, sigma_grid, R_grid, cosmo
     @inbounds for iz in 1:nz
         z = zs[iz]; a = scalefactor_from_redshift(z); Om_mz = _Omega_m_a(a, cosmo, LCDM=false)
         g = growth_itp(a); G = get_accumulated_growth(a, growth_itp); dc = dc_Mead(a, Om_mz, f_nu, g, G); Dv = Dv_Mead(a, Om_mz, f_nu, g, G)
-        delta_c[iz], Delta_v[iz] = dc, Dv; Rnl = get_nonlinear_radius(R_grid[1], R_grid[end], dc, SigmaREval(sigma_R, z)); s8 = sigma_R(8.0, z); sv = sigmaV(0.0, PkLinEval(Pk_lin, z); kmin=kmin_sigmaV); neff = get_effective_index(Rnl, R_grid, view(sigma_grid, :, iz))
+        delta_c[iz], Delta_v[iz] = dc, Dv; Rnl = get_nonlinear_radius(R_grid[1], R_grid[end], dc, SigmaREval(sigma_R, z, iz)); s8 = _eval_sigma(sigma_R, 8.0, z, iz); sv = sigmaV(0.0, PkLinEval(Pk_lin, z, iz); kmin=kmin_sigmaV); neff = get_effective_index(Rnl, R_grid, view(sigma_grid, :, iz))
         R_nl[iz], sigma_v[iz], n_eff[iz], k_star[iz] = Rnl, sv, neff, 0.05618 * s8^(-1.013)
         if tweaks
             k_damp[iz] = 0.05699 * s8^(-1.089)
@@ -219,7 +226,7 @@ function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=tr
     nk, nz, nM = length(k), length(zs), length(ws.M); Om_m, Om_b, Om_nu = cosmo.Omega_m, cosmo.Omega_b, cosmo.Omega_nu
     Om_c, f_nu, rhom = Om_m - Om_b - Om_nu, Om_nu/Om_m, comoving_matter_density(Om_m)
     zc = 10.0; ac = scalefactor_from_redshift(zc); growth, growth_LCDM = ws.growth_itp, ws.growth_LCDM_itp
-    feedback_params = (T_AGN === nothing) ? Dict{Symbol, Float64}() : get_feedback_parameters(T_AGN)
+    feedback_params = (T_AGN === nothing) ? (B0=0.0, Bz=0.0, Mb0=0.0, Mbz=0.0, f0=0.0, fz=0.0) : get_feedback_parameters(T_AGN)
     w1h_ptr = ws.w1h_mat
     if (T_AGN !== nothing && !tweaks)
         amp_fb = ws.M ./ rhom; compute_weights_inplace!(ws.w1h_mat_fb, ws.M, ws.nu_mat, amp_fb, ws.gcol_buf[1], ws.wtcol_buf[1]); w1h_ptr = ws.w1h_mat_fb
@@ -227,13 +234,13 @@ function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=tr
     if (T_AGN !== nothing) && (!tweaks)
         for iz in 1:nz
             z = zs[iz]
-            ws.Mb_vec[iz] = feedback_params[:Mb0] * 10.0^(z * feedback_params[:Mbz])
+            ws.Mb_vec[iz] = feedback_params.Mb0 * 10.0^(z * feedback_params.Mbz)
             ws.fstar_vec[iz] = feedback_stellar_fraction(feedback_params, z, Om_b, Om_m)
         end
     end
     for iz in 1:nz
         z = zs[iz]; dc, Dv, B = hmpars.delta_c[iz], hmpars.Delta_v[iz], hmpars.B[iz]
-        if (T_AGN !== nothing) && (!tweaks); B = feedback_params[:B0] * 10.0^(z * feedback_params[:Bz]); end
+        if (T_AGN !== nothing) && (!tweaks); B = feedback_params.B0 * 10.0^(z * feedback_params.Bz); end
         
         # Only compute cc if we are in tweaks mode, or if it hasn't been computed?
         # Actually, cc depends on B which changes if T_AGN !== nothing && !tweaks
@@ -241,7 +248,7 @@ function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=tr
         # But wait, it doesn't depend on tweaks or T_AGN! It only depends on z, dc, Om_m, growth, etc.
         # So we can skip it if it's already computed.
         # For now, let's leave it as is to ensure correctness.
-        compute_collapse_redshifts_fast!(view(ws.cc, :, iz), ws.M, z, dc, Om_m, growth, ws.growth_itp_inverse, SigmaREval(ws.sigma_fast, z))
+        compute_collapse_redshifts_fast!(view(ws.cc, :, iz), ws.M, z, dc, Om_m, growth, ws.growth_itp_inverse, SigmaREval(ws.sigma_fast, z, iz))
         a_obs = scalefactor_from_redshift(z); dolag = (growth(ac)/growth_LCDM(ac)) * (growth_LCDM(a_obs)/growth(a_obs))
         rvs = cbrt(Dv)
         @inbounds @fastmath for iM in 1:nM
@@ -274,18 +281,8 @@ function hmcode_power!(Pk_out, k, zs, Pk_lin, sigma_R, cosmo, ws; T_AGN=10^7.8, 
     return Pk_out
 end
 
-function _hmcode_mass_steps(nM, accuracy)
-    accuracy > 0 || throw(ArgumentError("HMCode accuracy must be positive."))
-    if nM === nothing
-        return max(16, ceil(Int, 256 * float(accuracy)))
-    end
-    accuracy == 1.0 || throw(ArgumentError("Pass either HMCode accuracy or nM, not both."))
+function hmcode_power(k, zs, Pk_lin, sigma_R, cosmo; T_AGN=10^7.8, Mmin=1e0, Mmax=1e18, nM=128, threaded=false, use_fast_specials=true)
     nM >= 2 || throw(ArgumentError("HMCode nM must be at least 2."))
-    return Int(nM)
-end
-
-function hmcode_power(k, zs, Pk_lin, sigma_R, cosmo; T_AGN=10^7.8, Mmin=1e0, Mmax=1e18, nM=nothing, accuracy=1.0, threaded=false, use_fast_specials=true)
-    nM = _hmcode_mass_steps(nM, accuracy)
     M = exp.(range(log(Mmin), log(Mmax), length=nM))
     ws = HMcodeWorkspace(collect(Float64.(k)), collect(Float64.(zs)), M, cosmo, sigma_R, Pk_lin; nthreads=Threads.nthreads())
     Pk_out = zeros(length(k), length(zs))

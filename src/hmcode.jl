@@ -62,28 +62,56 @@ function _hmcode_trapz(x::AbstractVector, y::AbstractVector)
     return total
 end
 
+struct HMCodeLinearInterpolator{T_logk, T_logpk, T_z}
+    logk::T_logk
+    logpk::T_logpk
+    z::T_z
+end
+
+@inline function (itp::HMCodeLinearInterpolator)(kval::Real, zval::Real)
+    iz = _hmcode_z_index(itp.z, zval)
+    return itp(kval, iz)
+end
+
+@inline function (itp::HMCodeLinearInterpolator)(kval::Real, iz::Int)
+    return _hmcode_loglog_interp(itp.logk, view(itp.logpk, :, iz), kval)
+end
+
+struct HMCodeSigmaInterpolator{T_logk, T_logpk, T_k, T_z}
+    logk::T_logk
+    logpk::T_logpk
+    k::T_k
+    z::T_z
+end
+
+@inline function (itp::HMCodeSigmaInterpolator)(R::Real, zval::Real)
+    iz = _hmcode_z_index(itp.z, zval)
+    return itp(R, iz)
+end
+
+@inline function (itp::HMCodeSigmaInterpolator)(R::Real, iz::Int)
+    logpk_col = view(itp.logpk, :, iz)
+    integrand = similar(itp.logk)
+    @inbounds for i in eachindex(itp.logk)
+        kval = itp.k[i]
+        pkval = exp(logpk_col[i])
+        W = HMcode._Tophat_k(kval * R)
+        integrand[i] = kval^3 * pkval * W^2 / (2π^2)
+    end
+    return sqrt(max(_hmcode_trapz(itp.logk, integrand), 0.0))
+end
+
+HMcode._eval_sigma(f::HMCodeSigmaInterpolator, R, z, iz) = f(R, iz)
+HMcode._eval_pk(f::HMCodeLinearInterpolator, k, z, iz) = f(k, iz)
+
+@inline (s::HMcode.SigmaREval{<:HMCodeSigmaInterpolator})(R::Float64) = s.sigma_R(R, s.iz)
+@inline (s::HMcode.PkLinEval{<:HMCodeLinearInterpolator})(k::Float64) = s.Pk_lin(k, s.iz)
+
 function _hmcode_linear_interpolators(z::AbstractVector, k::AbstractVector, pk_lin_z::AbstractMatrix)
     logk = log.(Float64.(k))
     logpk = log.(Float64.(pk_lin_z))
-
-    pk_lin = function (kval::Real, zval::Real)
-        iz = _hmcode_z_index(z, zval)
-        return _hmcode_loglog_interp(logk, view(logpk, :, iz), kval)
-    end
-
-    sigma_R = function (R::Real, zval::Real)
-        iz = _hmcode_z_index(z, zval)
-        logpk_col = view(logpk, :, iz)
-        integrand = similar(logk)
-        @inbounds for i in eachindex(logk)
-            kval = k[i]
-            pkval = exp(logpk_col[i])
-            W = HMcode._Tophat_k(kval * R)
-            integrand[i] = kval^3 * pkval * W^2 / (2π^2)
-        end
-        return sqrt(max(_hmcode_trapz(logk, integrand), 0.0))
-    end
-
+    pk_lin = HMCodeLinearInterpolator(logk, logpk, z)
+    sigma_R = HMCodeSigmaInterpolator(logk, logpk, k, z)
     return pk_lin, sigma_R
 end
 
@@ -132,10 +160,7 @@ HMCode. It should therefore cover the linear spectrum over a sufficiently broad
 range for the requested cosmology.
 
 Keyword arguments are forwarded to the embedded HMCode implementation. Common
-options include `T_AGN=10^7.8`, `accuracy=1.0`, `Mmin=1e0`, `Mmax=1e18`,
-`nM=nothing`, and `threaded=false`. The `accuracy` keyword scales the default
-mass-integration grid (`nM = ceil(Int, 256 * accuracy)`); pass `nM` directly for
-low-level control.
+options include `T_AGN=10^7.8`, `Mmin=1e0`, `Mmax=1e18`, `nM=128`, and `threaded=false`.
 """
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector,
                     pk_mm_z::AbstractMatrix; pk_cb_z::Union{Nothing,AbstractMatrix}=nothing,

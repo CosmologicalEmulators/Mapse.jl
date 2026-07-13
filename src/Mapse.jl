@@ -41,14 +41,17 @@ function __init__()
     _init_halofit_Fν_spline!()
 end
 
+const halofit_pmm = halofit_Pmm
+const hmcode_pmm = hmcode_Pmm
+
 export TransferFunctionEmulator, load_emulator,
     artifact_path,
     get_Pk, get_kgrid, get_emulator_description,
     compute_pca, save_pca_metadata, BUILTIN_PREPROCESSING, BUILTIN_POSTPROCESSING,
     LOAD_PRESETS, DEFAULT_EMULATOR_NAME, DEFAULT_EMULATOR_ARTIFACT,
-    TRAINED_EMULATOR_ARTIFACTS, preprocessing_linear_pk_mnuw0wacdm,
-    postprocessing_linear_pk_mnuw0wacdm_sym_ratio,
-    HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm,
-    HMCodeCosmology, hmcode_Pmm, hmcode_boost
+    TRAINED_EMULATOR_ARTIFACTS, lcdm_transfer_function, preprocessing_drop_primordial_parameters,
+    postprocessing_lcdm_transfer_ratio,
+    HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm, halofit_pmm,
+    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_boost
 
 end # module

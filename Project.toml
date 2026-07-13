@@ -30,13 +30,6 @@ Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
 [extensions]
 MapseReactantExt = ["Reactant"]
 
-[extras]
-DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
-Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
-SimpleChains = "de6bee2f-e2f4-4ec7-b6ed-219cc6f6e9e5"
-Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
 [compat]
 AbstractCosmologicalEmulators = "0.10"
 Adapt = "3, 4"
@@ -45,7 +38,6 @@ FastGaussQuadrature = "1"
 Integrals = "4, 5"
 Interpolations = "0.15, 0.16"
 JSON = "0.21, 1"
-julia = "1.10"
 LinearAlgebra = "1"
 LoopVectorization = "0.12"
 NPZ = "0.4"
@@ -59,6 +51,14 @@ SciMLSensitivity = "7"
 SpecialFunctions = "2"
 Statistics = "1"
 Trapz = "2"
+julia = "1.10"
+
+[extras]
+DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
+SimpleChains = "de6bee2f-e2f4-4ec7-b6ed-219cc6f6e9e5"
+Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
 test = ["DelimitedFiles", "Reactant", "SimpleChains", "Static", "Test"]

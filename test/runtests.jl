@@ -89,10 +89,9 @@ x3 = Array(LinRange(-1., 1., 100))
     @test Mapse.reconstruct([2.0, 3.0], compression) ≈ [12.0, 23.0, 35.0]
     @test Mapse.reconstruct([2.0 3.0; 4.0 5.0], compression) ≈ [12.0 13.0; 24.0 25.0; 36.0 38.0]
 
-    @test Mapse.preprocessing_linear_pk_mnuw0wacdm(collect(1:8)) == collect(3:8)
-    @test haskey(Mapse.LOAD_PRESETS, :mnuw0wacdm_linear)
-    @test Mapse.BUILTIN_PREPROCESSING["linear_pk_mnuw0wacdm"] === Mapse.preprocessing_linear_pk_mnuw0wacdm
-    @test Mapse.BUILTIN_POSTPROCESSING["linear_pk_mnuw0wacdm_sym_ratio"] === Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio
+    @test Mapse.preprocessing_drop_primordial_parameters(collect(1:8)) == collect(3:8)
+    @test Mapse.BUILTIN_PREPROCESSING["drop_primordial_parameters"] === Mapse.preprocessing_drop_primordial_parameters
+    @test Mapse.BUILTIN_POSTPROCESSING["lcdm_transfer_ratio"] === Mapse.postprocessing_lcdm_transfer_ratio
     @test Mapse.DEFAULT_EMULATOR_NAME == "mnuw0wacdm_class"
     @test Mapse.DEFAULT_EMULATOR_ARTIFACT == "mnuw0wacdm_class"
 
@@ -102,8 +101,8 @@ x3 = Array(LinRange(-1., 1., 100))
     @test_throws ArgumentError Mapse.load_emulator(artifact_root)
     @test_throws ArgumentError Mapse.load_emulator(tempname())
 
-    artifact_pmm_emu = Mapse.load_emulator(joinpath(artifact_root, "Pk_lin_mm"); preset=:mnuw0wacdm_linear)
-    artifact_pcb_emu = Mapse.load_emulator(joinpath(artifact_root, "Pk_lin_cb"); preset=:mnuw0wacdm_linear)
+    artifact_pmm_emu = Mapse.load_emulator(joinpath(artifact_root, "Pk_lin_mm"))
+    artifact_pcb_emu = Mapse.load_emulator(joinpath(artifact_root, "Pk_lin_cb"))
 
     artifact_params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
     artifact_pk_mm = Mapse.get_Pk(artifact_params, 0.0, 1.0, artifact_pmm_emu)
@@ -116,7 +115,7 @@ x3 = Array(LinRange(-1., 1., 100))
 
     # Halofit on linear emulator output
     artifact_k_lin = Mapse.get_kgrid(artifact_pmm_emu)
-    artifact_halofit_pk = Mapse.halofit_Pmm(artifact_params, 0.0, artifact_k_lin, artifact_pk_mm)
+    artifact_halofit_pk = Mapse.halofit_pmm(artifact_params, 0.0, artifact_k_lin, artifact_pk_mm)
     @test size(artifact_halofit_pk) == (length(artifact_k_lin),)
     @test all(isfinite, artifact_halofit_pk)
     @test all(>(0), artifact_halofit_pk)
@@ -129,8 +128,8 @@ x3 = Array(LinRange(-1., 1., 100))
     @test all(isfinite, artifact_pk_vec)
 
     artifacts_toml = read(Mapse.ARTIFACTS_TOML, String)
-    @test occursin("git-tree-sha1 = \"c1a93f08faafd81f6c62ac3ee97bb9fe37f8cf2e\"", artifacts_toml)
-    @test occursin("zenodo.org/records/20646263", artifacts_toml)
+    @test occursin("git-tree-sha1 = \"38a05969d61632358bf4981957f397e45f88107f\"", artifacts_toml)
+    @test occursin("zenodo.org/records/21328528", artifacts_toml)
 
     primitive_output = ones(3)
     primitive_emu = Mapse.TransferFunctionEmulator(TrainedEmulator = emu, kgrid=[0.1, 0.2, 0.3],
@@ -138,8 +137,8 @@ x3 = Array(LinRange(-1., 1., 100))
                                         Preprocessing = preprocessing,
                                         Postprocessing = postprocessing)
     primitive_params = [3.0, 0.96, 67.0, 0.0224, 0.12, 0.06, -1.0, 0.0]
-    scalar_post = Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio(primitive_params, primitive_output, 2.0, primitive_emu)
-    vector_post = Mapse.postprocessing_linear_pk_mnuw0wacdm_sym_ratio(primitive_params, repeat(primitive_output, 1, 2), [2.0, 3.0], primitive_emu)
+    scalar_post = Mapse.postprocessing_lcdm_transfer_ratio(primitive_params, primitive_output, 2.0, primitive_emu)
+    vector_post = Mapse.postprocessing_lcdm_transfer_ratio(primitive_params, repeat(primitive_output, 1, 2), [2.0, 3.0], primitive_emu)
     @test size(scalar_post) == (3,)
     @test size(vector_post) == (3, 2)
     @test vector_post[:, 1] ≈ scalar_post
@@ -159,7 +158,7 @@ x3 = Array(LinRange(-1., 1., 100))
     @test size(halofit_Ωv_z) == size(halofit_z)
     @test Mapse.halofit_background(halofit_cosmo, halofit_z[1]) == (halofit_Ωm_z[1], halofit_Ωv_z[1])
 
-    halofit_pk_nl = @inferred Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin)
+    halofit_pk_nl = @inferred Mapse.halofit_pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin)
     halofit_pk_nl_unchecked = @inferred Mapse._halofit_Pmm_unchecked(halofit_cosmo,
                                                                      halofit_z,
                                                                      halofit_k,
@@ -172,7 +171,7 @@ x3 = Array(LinRange(-1., 1., 100))
                                                                        view(halofit_pk_lin, :, 1),
                                                                        halofit_Ωm_z[1],
                                                                        halofit_Ωv_z[1])
-    halofit_pk_nl_external_bg = @inferred Mapse.halofit_Pmm(halofit_cosmo, halofit_z,
+    halofit_pk_nl_external_bg = @inferred Mapse.halofit_pmm(halofit_cosmo, halofit_z,
                                                            halofit_k, halofit_pk_lin,
                                                            halofit_Ωm_z, halofit_Ωv_z)
     @test size(halofit_pk_nl) == size(halofit_pk_lin)
@@ -181,15 +180,15 @@ x3 = Array(LinRange(-1., 1., 100))
     @test halofit_pk_nl_external_bg ≈ halofit_pk_nl
     @test all(isfinite, halofit_pk_nl)
     @test all(>(0), halofit_pk_nl)
-    @test (@inferred Mapse.halofit_Pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1])) ≈ halofit_pk_nl[:, 1]
-    @test Mapse.halofit_Pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1],
+    @test (@inferred Mapse.halofit_pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1])) ≈ halofit_pk_nl[:, 1]
+    @test Mapse.halofit_pmm(halofit_cosmo, 0.0, halofit_k, halofit_pk_lin[:, 1],
                             halofit_Ωm_z[1], halofit_Ωv_z[1]) ≈ halofit_pk_nl[:, 1]
-    @test size(@inferred(Mapse.halofit_Pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin))) == size(halofit_pk_lin)
-    @test Mapse.halofit_Pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin,
+    @test size(@inferred(Mapse.halofit_pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin))) == size(halofit_pk_lin)
+    @test Mapse.halofit_pmm(halofit_params, halofit_z, halofit_k, halofit_pk_lin,
                             halofit_Ωm_z, halofit_Ωv_z) ≈ halofit_pk_nl
-    @test_throws ArgumentError Mapse.halofit_Pmm(halofit_cosmo, halofit_z, reverse(halofit_k), halofit_pk_lin)
-    @test_throws DimensionMismatch Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin[:, 1:1])
-    @test_throws DimensionMismatch Mapse.halofit_Pmm(halofit_cosmo, halofit_z, halofit_k,
+    @test_throws ArgumentError Mapse.halofit_pmm(halofit_cosmo, halofit_z, reverse(halofit_k), halofit_pk_lin)
+    @test_throws DimensionMismatch Mapse.halofit_pmm(halofit_cosmo, halofit_z, halofit_k, halofit_pk_lin[:, 1:1])
+    @test_throws DimensionMismatch Mapse.halofit_pmm(halofit_cosmo, halofit_z, halofit_k,
                                                      halofit_pk_lin, halofit_Ωm_z[1:1],
                                                      halofit_Ωv_z)
 
@@ -201,7 +200,7 @@ x3 = Array(LinRange(-1., 1., 100))
     class_Ωv_z = [class_reference[findfirst(==(z), class_reference[:, 1]), 5] for z in class_z]
     class_pk_nl = reshape(class_reference[:, 6], length(class_k), length(class_z))
     class_params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
-    mapse_class_pk_nl = Mapse.halofit_Pmm(class_params, class_z, class_k, class_pk_lin,
+    mapse_class_pk_nl = Mapse.halofit_pmm(class_params, class_z, class_k, class_pk_lin,
                                           class_Ωm_z, class_Ωv_z)
     @test mapse_class_pk_nl ≈ class_pk_nl rtol=6e-3
 
@@ -223,7 +222,7 @@ x3 = Array(LinRange(-1., 1., 100))
     @test size(hmcode_boost) == size(hmcode_pk_mm)
     @test all(isfinite, hmcode_boost)
     @test hmcode_boost ≈ hmcode_boost_ref rtol=3e-3
-    @test Mapse.hmcode_Pmm(hmcode_cosmo, 0.0, hmcode_k, hmcode_pk_mm[:, 1],
+    @test Mapse.hmcode_pmm(hmcode_cosmo, 0.0, hmcode_k, hmcode_pk_mm[:, 1],
                            hmcode_pk_cb[:, 1]; nM=64, threaded=false) ./ hmcode_pk_mm[:, 1] ≈
           Mapse.hmcode_boost(hmcode_cosmo, 0.0, hmcode_k, hmcode_pk_mm[:, 1],
                              hmcode_pk_cb[:, 1];
@@ -232,17 +231,13 @@ x3 = Array(LinRange(-1., 1., 100))
                              pk_cb_z=hmcode_pk_cb, nM=64, threaded=false) ≈
           Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
                              hmcode_pk_cb; nM=64, threaded=false)
-    @test Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
-                             hmcode_pk_cb; accuracy=0.25, threaded=false) ≈
-          Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
-                             hmcode_pk_cb; nM=64, threaded=false)
     @test Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_k,
                              hmcode_pk_mm; pk_cb_support_z=hmcode_pk_cb,
                              nM=64, threaded=false) ≈
           Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm,
                              hmcode_pk_cb; nM=64, threaded=false)
     hmcode_kout = hmcode_k[1:2:end]
-    hmcode_pk_nl_kout = Mapse.hmcode_Pmm(hmcode_cosmo, hmcode_z, hmcode_kout,
+    hmcode_pk_nl_kout = Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z, hmcode_kout,
                                          hmcode_k, hmcode_pk_mm;
                                          pk_cb_support_z=hmcode_pk_cb,
                                          nM=64, threaded=false)
@@ -252,18 +247,17 @@ x3 = Array(LinRange(-1., 1., 100))
                                            nM=64, threaded=false)
     @test size(hmcode_pk_nl_kout) == (length(hmcode_kout), length(hmcode_z))
     @test hmcode_boost_kout ≈ hmcode_pk_nl_kout ./ hmcode_pk_mm[1:2:end, :]
-    @test Mapse.hmcode_Pmm(hmcode_cosmo, 0.0, hmcode_kout, hmcode_pk_mm[:, 1];
+    @test Mapse.hmcode_pmm(hmcode_cosmo, 0.0, hmcode_kout, hmcode_pk_mm[:, 1];
                            k_support=hmcode_k, pk_cb_support=hmcode_pk_cb[:, 1],
                            nM=64, threaded=false) ≈ hmcode_pk_nl_kout[:, 1]
-    @test_throws ArgumentError Mapse.hmcode_Pmm(hmcode_cosmo, hmcode_z, reverse(hmcode_k), hmcode_pk_mm)
-    @test_throws DimensionMismatch Mapse.hmcode_Pmm(hmcode_cosmo, [0.0, 1.0], hmcode_k, hmcode_pk_mm)
-    @test_throws DimensionMismatch Mapse.hmcode_Pmm(hmcode_cosmo, hmcode_z, hmcode_k,
+    @test_throws ArgumentError Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z, reverse(hmcode_k), hmcode_pk_mm)
+    @test_throws DimensionMismatch Mapse.hmcode_pmm(hmcode_cosmo, [0.0, 1.0], hmcode_k, hmcode_pk_mm)
+    @test_throws DimensionMismatch Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z, hmcode_k,
                                                     hmcode_pk_mm, hmcode_pk_cb[1:end-1, :])
     @test_throws ArgumentError Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k,
-                                                  hmcode_pk_mm, hmcode_pk_cb; accuracy=0.0)
+                                                  hmcode_pk_mm, hmcode_pk_cb; nM=0)
     @test_throws ArgumentError Mapse.hmcode_boost(hmcode_cosmo, hmcode_z, hmcode_k,
-                                                  hmcode_pk_mm, hmcode_pk_cb; nM=64,
-                                                  accuracy=0.25)
+                                                  hmcode_pk_mm, hmcode_pk_cb; nM=1)
     @test_throws ArgumentError Mapse.hmcode_boost(hmcode_cosmo, hmcode_z,
                                                   vcat(hmcode_kout, 20.0),
                                                   hmcode_k, hmcode_pk_mm;
