@@ -251,6 +251,14 @@ x3 = Array(LinRange(-1., 1., 100))
                            k_support=hmcode_k, pk_cb_support=hmcode_pk_cb[:, 1],
                            nM=64, threaded=false) ≈ hmcode_pk_nl_kout[:, 1]
     @test_throws ArgumentError Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z, reverse(hmcode_k), hmcode_pk_mm)
+    hmcode_k_irregular = copy(hmcode_k)
+    hmcode_k_irregular[10] = (hmcode_k[9] + hmcode_k[10]) / 2
+    @test_throws ArgumentError Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z,
+                                                hmcode_k_irregular, hmcode_pk_mm)
+    @test_throws ArgumentError Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z,
+                                                hmcode_kout, hmcode_k_irregular,
+                                                hmcode_pk_mm;
+                                                pk_cb_support_z=hmcode_pk_cb)
     @test_throws DimensionMismatch Mapse.hmcode_pmm(hmcode_cosmo, [0.0, 1.0], hmcode_k, hmcode_pk_mm)
     @test_throws DimensionMismatch Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z, hmcode_k,
                                                     hmcode_pk_mm, hmcode_pk_cb[1:end-1, :])
@@ -262,6 +270,22 @@ x3 = Array(LinRange(-1., 1., 100))
                                                   vcat(hmcode_kout, 20.0),
                                                   hmcode_k, hmcode_pk_mm;
                                                   pk_cb_support_z=hmcode_pk_cb)
+
+    hmcode_curved_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_curved_parity_reference.txt"), comments=true)
+    hmcode_curved_z = unique(hmcode_curved_reference[:, 1])
+    hmcode_curved_k = hmcode_curved_reference[hmcode_curved_reference[:, 1] .== hmcode_curved_z[1], 2]
+    hmcode_curved_pmm = reshape(hmcode_curved_reference[:, 3], length(hmcode_curved_k), length(hmcode_curved_z))
+    hmcode_curved_pcb = reshape(hmcode_curved_reference[:, 4], length(hmcode_curved_k), length(hmcode_curved_z))
+    hmcode_curved_dmo = reshape(hmcode_curved_reference[:, 5], length(hmcode_curved_k), length(hmcode_curved_z))
+    hmcode_curved_feedback = reshape(hmcode_curved_reference[:, 6], length(hmcode_curved_k), length(hmcode_curved_z))
+    hmcode_curved_cosmo = Mapse.HMCodeCosmology(hmcode_Ωm, hmcode_Ωb, hmcode_h, 0.9649,
+                                                0.8109118, -0.9, 0.2, hmcode_Ων, 0.01)
+    @test Mapse.hmcode_pmm(hmcode_curved_cosmo, hmcode_curved_z, hmcode_curved_k,
+                           hmcode_curved_pmm; pk_cb_z=hmcode_curved_pcb,
+                           T_AGN=nothing, nM=32, threaded=false) ≈ hmcode_curved_dmo rtol=1e-12
+    @test Mapse.hmcode_pmm(hmcode_curved_cosmo, hmcode_curved_z, hmcode_curved_k,
+                           hmcode_curved_pmm; pk_cb_z=hmcode_curved_pcb,
+                           T_AGN=10.0^7.8, nM=32, threaded=false) ≈ hmcode_curved_feedback rtol=1e-12
 
     mktempdir() do dir
         Mapse.save_pca_metadata(dir, compression.mean, compression.basis)

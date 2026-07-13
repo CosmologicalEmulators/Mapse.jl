@@ -10,6 +10,7 @@ import Mapse:
     _halofit_integrate,
     _halofit_Pmm_one_z_unchecked,
     _halofit_Pmm_unchecked,
+    _hmcode_choose_cb,
     halofit_Pmm,
     hmcode_Pmm,
     hmcode_boost
@@ -759,8 +760,13 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
                     pk_mm_z::ReactantMat; pk_cb_z=nothing, k_support=nothing,
                     pk_cb_support_z=nothing, T_AGN=10.0^7.8, Mmin=1.0,
                     Mmax=1.0e18, nM=128, kwargs...)
+    # HMCode's BAO smoothing requires a log-uniform support grid. Native Julia
+    # validates that host-side contract before execution. Reactant receives
+    # dynamic device arrays here, so materializing them solely to validate grid
+    # values would add a host synchronization and defeat compiled execution.
+    # The compiled API deliberately relies on the documented input contract.
     k_linear = k_support === nothing ? k : k_support
-    pkcb = pk_cb_support_z === nothing ? pk_cb_z : pk_cb_support_z
+    pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     pkcb === nothing && (pkcb = pk_mm_z)
     return _hmcode_Pmm_reactant(cosmo, z, k, k_linear, pk_mm_z, pkcb;
                                 T_AGN=T_AGN, Mmin=Mmin, Mmax=Mmax,
@@ -775,16 +781,17 @@ end
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
                     k_support::ReactantVec, pk_mm_support_z::ReactantMat;
                     pk_cb_support_z=nothing, pk_cb_z=nothing, kwargs...)
-    pkcb = pk_cb_support_z === nothing ? pk_cb_z : pk_cb_support_z
+    pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     return hmcode_Pmm(cosmo, z, k_out, pk_mm_support_z;
                       k_support=k_support, pk_cb_z=pkcb, kwargs...)
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
                     k_support::ReactantVec, pk_mm_support_z::ReactantMat,
-                    pk_cb_support_z::ReactantMat; kwargs...)
+                    pk_cb_support_z::ReactantMat; pk_cb_z=nothing, kwargs...)
+    pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     return hmcode_Pmm(cosmo, z, k_out, pk_mm_support_z;
-                      k_support=k_support, pk_cb_z=pk_cb_support_z, kwargs...)
+                      k_support=k_support, pk_cb_z=pkcb, kwargs...)
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
@@ -793,7 +800,7 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
     k_linear = k_support === nothing ? k : k_support
     zvec = k_linear[1:1] .* 0 .+ float(z)
     pk = reshape(pk_mm, length(k_linear), 1)
-    pkcb = pk_cb_support === nothing ? pk_cb : pk_cb_support
+    pkcb = _hmcode_choose_cb(pk_cb, pk_cb_support)
     pkcb_mat = pkcb === nothing ? nothing : reshape(pkcb, length(k_linear), 1)
     out = hmcode_Pmm(cosmo, zvec, k, pk; k_support=k_support, pk_cb_z=pkcb_mat, kwargs...)
     return vec(out)
@@ -808,8 +815,9 @@ function hmcode_boost(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
                       pk_mm_z::ReactantMat; pk_cb_z=nothing, k_support=nothing,
                       pk_cb_support_z=nothing, kwargs...)
     k_linear = k_support === nothing ? k : k_support
-    pk_nl = hmcode_Pmm(cosmo, z, k, pk_mm_z; pk_cb_z=pk_cb_z,
-                       k_support=k_support, pk_cb_support_z=pk_cb_support_z,
+    pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
+    pk_nl = hmcode_Pmm(cosmo, z, k, pk_mm_z; pk_cb_z=pkcb,
+                       k_support=k_support,
                        kwargs...)
     pk_lin_out = k_support === nothing ? pk_mm_z : _hmcode_loglog_interp_columns(k_linear, pk_mm_z, k)
     return pk_nl ./ pk_lin_out
@@ -823,16 +831,17 @@ end
 function hmcode_boost(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
                       k_support::ReactantVec, pk_mm_support_z::ReactantMat;
                       pk_cb_support_z=nothing, pk_cb_z=nothing, kwargs...)
-    pkcb = pk_cb_support_z === nothing ? pk_cb_z : pk_cb_support_z
+    pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     return hmcode_boost(cosmo, z, k_out, pk_mm_support_z;
                         k_support=k_support, pk_cb_z=pkcb, kwargs...)
 end
 
 function hmcode_boost(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
                       k_support::ReactantVec, pk_mm_support_z::ReactantMat,
-                      pk_cb_support_z::ReactantMat; kwargs...)
+                    pk_cb_support_z::ReactantMat; pk_cb_z=nothing, kwargs...)
+    pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     return hmcode_boost(cosmo, z, k_out, pk_mm_support_z;
-                        k_support=k_support, pk_cb_z=pk_cb_support_z, kwargs...)
+                        k_support=k_support, pk_cb_z=pkcb, kwargs...)
 end
 
 function hmcode_boost(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,

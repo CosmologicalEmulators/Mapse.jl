@@ -6,6 +6,17 @@ fractions today. The linear input spectra supplied to `hmcode_Pmm`/`hmcode_boost
 should use the same distance convention as `k`.
 """
 const HMCodeCosmology = HMcode.HMcodeCosmology
+const HMCODE_LOG_GRID_RTOL = 1.0e-10
+
+function _validate_hmcode_log_grid(k::AbstractVector)
+    dlogk = diff(log.(k))
+    all(isapprox.(dlogk, first(dlogk); rtol=HMCODE_LOG_GRID_RTOL, atol=0)) ||
+        throw(ArgumentError(
+            "HMCode support k values must be uniformly spaced in log(k) " *
+            "(relative tolerance $(HMCODE_LOG_GRID_RTOL))."
+        ))
+    return nothing
+end
 
 function _validate_hmcode_inputs(z::AbstractVector, k::AbstractVector, pk_lin_z::AbstractMatrix;
                                  name::AbstractString="pk_lin_z")
@@ -17,6 +28,7 @@ function _validate_hmcode_inputs(z::AbstractVector, k::AbstractVector, pk_lin_z:
     all(k .> 0) || throw(ArgumentError("HMCode requires strictly positive k values."))
     all(pk_lin_z .> 0) || throw(ArgumentError("HMCode requires strictly positive $name values."))
     all(diff(k) .> 0) || throw(ArgumentError("HMCode requires k values sorted in ascending order."))
+    _validate_hmcode_log_grid(k)
     return nothing
 end
 
@@ -157,7 +169,9 @@ halo-model spectrum on every support-grid point.
 
 The supplied `k` grid is also used to compute the σ(R,z) integrals required by
 HMCode. It should therefore cover the linear spectrum over a sufficiently broad
-range for the requested cosmology.
+range for the requested cosmology and must be uniformly spaced in `log(k)`.
+When `k_support` is supplied, this requirement applies to `k_support`; `k` may
+be an arbitrary strictly increasing output grid within the support range.
 
 Keyword arguments are forwarded to the embedded HMCode implementation. Common
 options include `T_AGN=10^7.8`, `Mmin=1e0`, `Mmax=1e18`, `nM=128`, and `threaded=false`.
