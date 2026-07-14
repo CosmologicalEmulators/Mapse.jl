@@ -271,6 +271,94 @@ x3 = Array(LinRange(-1., 1., 100))
                                                   hmcode_k, hmcode_pk_mm;
                                                   pk_cb_support_z=hmcode_pk_cb)
 
+    # Fast HMCode API tests
+    hmcode_z_fine = collect(LinRange(minimum(hmcode_z), maximum(hmcode_z), 100))
+    pk_mm_fine = zeros(length(hmcode_k), length(hmcode_z_fine))
+    pk_cb_fine = zeros(length(hmcode_k), length(hmcode_z_fine))
+    for ik in 1:length(hmcode_k)
+        itp_mm = AkimaInterpolation(view(hmcode_pk_mm, ik, :), hmcode_z)
+        itp_cb = AkimaInterpolation(view(hmcode_pk_cb, ik, :), hmcode_z)
+        for iz in 1:length(hmcode_z_fine)
+            pk_mm_fine[ik, iz] = itp_mm(hmcode_z_fine[iz])
+            pk_cb_fine[ik, iz] = itp_cb(hmcode_z_fine[iz])
+        end
+    end
+
+    pk_nl_direct = Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine;
+                                    pk_cb_z=pk_cb_fine, nM=64, threaded=false)
+    pk_nl_fast = Mapse.hmcode_pmm_fast(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine, 20;
+                                       pk_cb_z=pk_cb_fine, nM=64, threaded=false)
+    @test size(pk_nl_fast) == size(pk_nl_direct)
+    @test all(isfinite, pk_nl_fast)
+    @test pk_nl_fast ≈ pk_nl_direct rtol=5e-3
+
+    # Test boost fast
+    boost_direct = Mapse.hmcode_boost(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine, pk_cb_fine;
+                                      nM=64, threaded=false)
+    boost_fast = Mapse.hmcode_boost_fast(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine, pk_cb_fine, 20;
+                                         nM=64, threaded=false)
+    @test size(boost_fast) == size(boost_direct)
+    @test boost_fast ≈ boost_direct rtol=5e-3
+
+    # Test support k
+    pk_nl_fast_kout = Mapse.hmcode_pmm_fast(hmcode_cosmo, hmcode_z_fine, hmcode_kout, hmcode_k, pk_mm_fine, 20;
+                                            pk_cb_support_z=pk_cb_fine, nM=64, threaded=false)
+    @test size(pk_nl_fast_kout) == (length(hmcode_kout), length(hmcode_z_fine))
+    @test all(isfinite, pk_nl_fast_kout)
+
+    # Test scalar fallback
+    pk_nl_fast_scalar = Mapse.hmcode_pmm_fast(hmcode_cosmo, 1.0, hmcode_k, pk_mm_fine[:, 1], 20;
+                                             pk_cb=pk_cb_fine[:, 1], nM=64, threaded=false)
+    pk_nl_direct_scalar = Mapse.hmcode_pmm(hmcode_cosmo, 1.0, hmcode_k, pk_mm_fine[:, 1];
+                                           pk_cb=pk_cb_fine[:, 1], nM=64, threaded=false)
+    @test pk_nl_fast_scalar ≈ pk_nl_direct_scalar
+
+    # Test smart signatures (inputs already on the coarse grid)
+    z_coarse = collect(LinRange(minimum(hmcode_z), maximum(hmcode_z), 20))
+    pk_mm_coarse = zeros(length(hmcode_k), length(z_coarse))
+    pk_cb_coarse = zeros(length(hmcode_k), length(z_coarse))
+    for ik in 1:length(hmcode_k)
+        itp_mm = AkimaInterpolation(view(hmcode_pk_mm, ik, :), hmcode_z)
+        itp_cb = AkimaInterpolation(view(hmcode_pk_cb, ik, :), hmcode_z)
+        for iz in 1:length(z_coarse)
+            pk_mm_coarse[ik, iz] = itp_mm(z_coarse[iz])
+            pk_cb_coarse[ik, iz] = itp_cb(z_coarse[iz])
+        end
+    end
+
+    # Verify smart pmm_fast output matches downsampled pmm_fast exactly
+    pk_nl_smart = Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse, hmcode_z_fine, hmcode_k, pk_mm_coarse;
+                                        pk_cb_coarse=pk_cb_coarse, nM=64, threaded=false)
+    @test size(pk_nl_smart) == size(pk_nl_direct)
+    @test pk_nl_smart ≈ pk_nl_fast rtol=1e-12
+
+    # Verify smart boost_fast output matches direct calculation to high accuracy
+    boost_smart = Mapse.hmcode_boost_fast(hmcode_cosmo, z_coarse, hmcode_z_fine, hmcode_k, pk_mm_coarse;
+                                          pk_cb_coarse=pk_cb_coarse, nM=64, threaded=false)
+    @test size(boost_smart) == size(boost_direct)
+    @test boost_smart ≈ boost_direct rtol=5e-3
+
+    # Verify smart support-k output matches
+    pk_nl_smart_kout = Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse, hmcode_z_fine, hmcode_kout, hmcode_k, pk_mm_coarse;
+                                             pk_cb_coarse=pk_cb_coarse, nM=64, threaded=false)
+    @test size(pk_nl_smart_kout) == size(pk_nl_fast_kout)
+    @test pk_nl_smart_kout ≈ pk_nl_fast_kout rtol=1e-12
+
+    # Verify smart scalar z_fine output
+    pk_nl_smart_scalar = Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse, 1.0, hmcode_k, pk_mm_coarse;
+                                               pk_cb_coarse=pk_cb_coarse, nM=64, threaded=false)
+    @test length(pk_nl_smart_scalar) == length(hmcode_k)
+
+    # Grid and parameter validation checks for fast APIs
+    @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine, 4; pk_cb_z=pk_cb_fine)
+    @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, reverse(hmcode_z_fine), hmcode_k, pk_mm_fine, 20; pk_cb_z=pk_cb_fine)
+    @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse[1:4], hmcode_z_fine, hmcode_k, pk_mm_coarse[:, 1:4]; pk_cb_coarse=pk_cb_coarse[:, 1:4])
+    @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, reverse(z_coarse), hmcode_z_fine, hmcode_k, pk_mm_coarse; pk_cb_coarse=pk_cb_coarse)
+    @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse, [z_coarse[end] + 0.1], hmcode_k, pk_mm_coarse; pk_cb_coarse=pk_cb_coarse)
+    @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse, hmcode_z_fine, hmcode_k, pk_mm_coarse; pk_cb_coarse=pk_cb_coarse, pk_cb_support_coarse=pk_cb_coarse)
+    @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine, 20; pk_cb_z=pk_cb_fine, pk_cb_support_z=pk_cb_fine)
+
+
     hmcode_curved_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_curved_parity_reference.txt"), comments=true)
     hmcode_curved_z = unique(hmcode_curved_reference[:, 1])
     hmcode_curved_k = hmcode_curved_reference[hmcode_curved_reference[:, 1] .== hmcode_curved_z[1], 2]

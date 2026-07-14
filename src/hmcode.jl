@@ -287,3 +287,295 @@ function hmcode_boost(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
                       pk_mm::AbstractVector, pk_cb::AbstractVector; kwargs...)
     return hmcode_boost(cosmo, z, k, pk_mm; pk_cb=pk_cb, kwargs...)
 end
+
+"""
+    hmcode_pmm_fast(cosmo, z, k, pk_mm_z, N_z_coarse; [pk_cb_z, k_support, pk_cb_support_z, kwargs...])
+    hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse; [pk_cb_coarse, k_support, pk_cb_support_coarse, kwargs...])
+
+Compute HMCode2020 nonlinear matter power spectrum P_mm(k,z) using a coarse redshift grid and Akima interpolation.
+
+Warning:
+    This fast API is an approximation. Instead of evaluating the full non-linear
+    HMCode equations on the high-fidelity target grid, it solves HMCode on
+    the coarse grid and uses Akima splines to reconstruct the results.
+    
+    - Typical Errors: Redshift interpolation errors are generally small but largest
+      at high k, high redshift, and in regions where the nonlinear boost factor
+      evolves rapidly.
+    - Recommended Coarse Grid Size:
+        - `N_z_coarse = 10` is NOT precision-safe and can introduce percent-level artifacts.
+        - `N_z_coarse = 50` is a reasonable compromise between speed and accuracy.
+        - `N_z_coarse = 100` is safer, typically guaranteeing sub-percent worst-case
+          accuracy compared to full direct evaluation in studied regimes.
+    - Validation: Users are advised to validate the accuracy of this fast
+      path against the direct `hmcode_pmm` function for their specific redshift and
+      k ranges.
+
+Preferred Production Pattern:
+    Using the smart/coarse-grid API is the preferred production pattern:
+    1. Choose `z_coarse` (typically 50-100 nodes linearly spaced).
+    2. Evaluate linear transfer functions/emulators only on `z_coarse`.
+    3. Run HMCode via `hmcode_pmm_fast` on `z_coarse`.
+    4. Akima interpolate the final non-linear spectrum to `z_fine`.
+    This avoids running linear/transfer emulators on the dense fine redshift grid.
+
+Interpolation Target Note:
+    `hmcode_pmm_fast` interpolates the full nonlinear power spectrum P(k,z),
+    whereas `hmcode_boost_fast` interpolates the non-linear boost factor B(k,z).
+    Because these interpolation targets differ, they are not numerically equivalent.
+    For workflows where linear theory is smooth and high accuracy on the nonlinear
+    power spectrum is desired, interpolating P(k,z) directly via `hmcode_pmm_fast`
+    is generally recommended.
+"""
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector,
+                         pk_mm_z::AbstractMatrix, N_z_coarse::Int;
+                         pk_cb_z::Union{Nothing,AbstractMatrix}=nothing,
+                         k_support::Union{Nothing,AbstractVector}=nothing,
+                         pk_cb_support_z::Union{Nothing,AbstractMatrix}=nothing,
+                         kwargs...)
+    N_z_coarse >= 5 || throw(ArgumentError("N_z_coarse must be at least 5."))
+    issorted(z) && all(diff(z) .> 0) || throw(ArgumentError("z must be strictly increasing."))
+
+    pk_cb_linear_z = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
+
+    if length(z) <= N_z_coarse || length(z) < 5
+        return hmcode_Pmm(cosmo, z, k, pk_mm_z; pk_cb_z=pk_cb_linear_z, k_support=k_support, kwargs...)
+    end
+
+    z_coarse = collect(LinRange(minimum(z), maximum(z), N_z_coarse))
+
+    # Interpolate linear input spectra along the redshift axis to z_coarse
+    pk_mm_t = copy(transpose(pk_mm_z))
+    pk_mm_coarse_t = AbstractCosmologicalEmulators.akima_interpolation(pk_mm_t, z, z_coarse)
+    pk_mm_coarse = copy(transpose(pk_mm_coarse_t))
+
+    pk_cb_coarse = nothing
+    if pk_cb_linear_z !== nothing
+        pk_cb_t = copy(transpose(pk_cb_linear_z))
+        pk_cb_coarse_t = AbstractCosmologicalEmulators.akima_interpolation(pk_cb_t, z, z_coarse)
+        pk_cb_coarse = copy(transpose(pk_cb_coarse_t))
+    end
+
+    # Solve non-linear HMCode2020 on the coarse grid
+    Pk_nl_coarse = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
+                              pk_cb_z=pk_cb_coarse, k_support=k_support, kwargs...)
+
+    # Interpolate output non-linear power spectra back to the fine z grid
+    Pk_nl_coarse_t = copy(transpose(Pk_nl_coarse))
+    Pk_nl_fine_t = AbstractCosmologicalEmulators.akima_interpolation(Pk_nl_coarse_t, z_coarse, z)
+    return copy(transpose(Pk_nl_fine_t))
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::AbstractVector,
+                         k_out::AbstractVector, k_support::AbstractVector,
+                         pk_mm_support_z::AbstractMatrix, N_z_coarse::Int;
+                         pk_cb_support_z::Union{Nothing,AbstractMatrix}=nothing,
+                         pk_cb_z::Union{Nothing,AbstractMatrix}=nothing,
+                         kwargs...)
+    pk_cb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
+    return hmcode_pmm_fast(cosmo, z, k_out, pk_mm_support_z, N_z_coarse;
+                           k_support=k_support, pk_cb_z=pk_cb, kwargs...)
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
+                         pk_mm::AbstractVector, N_z_coarse::Int;
+                         pk_cb::Union{Nothing,AbstractVector}=nothing,
+                         k_support::Union{Nothing,AbstractVector}=nothing,
+                         pk_cb_support::Union{Nothing,AbstractVector}=nothing,
+                         kwargs...)
+    return hmcode_pmm(cosmo, z, k, pk_mm; pk_cb=pk_cb, k_support=k_support,
+                      pk_cb_support=pk_cb_support, kwargs...)
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
+                         pk_mm::AbstractVector, pk_cb::AbstractVector, N_z_coarse::Int; kwargs...)
+    return hmcode_pmm_fast(cosmo, z, k, pk_mm, N_z_coarse; pk_cb=pk_cb, kwargs...)
+end
+
+# Smart signatures: User provides inputs directly on the coarse grid
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
+                         z_fine::Union{Real, AbstractVector{<:Real}}, k::AbstractVector{<:Real},
+                         pk_mm_coarse::AbstractMatrix{<:Real};
+                         pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                         k_support::Union{Nothing,AbstractVector}=nothing,
+                         pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                         kwargs...)
+    length(z_coarse) >= 5 || throw(ArgumentError("z_coarse must have at least 5 points for Akima interpolation."))
+    issorted(z_coarse) && all(diff(z_coarse) .> 0) || throw(ArgumentError("z_coarse must be strictly increasing."))
+
+    if z_fine isa AbstractVector
+        issorted(z_fine) && all(diff(z_fine) .> 0) || throw(ArgumentError("z_fine must be strictly increasing."))
+        all(z_fine .>= minimum(z_coarse)) && all(z_fine .<= maximum(z_coarse)) || throw(ArgumentError("z_fine must lie within the range of z_coarse."))
+    else
+        z_coarse[1] <= z_fine <= z_coarse[end] || throw(ArgumentError("z_fine must lie within the range of z_coarse."))
+    end
+
+    pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    Pk_nl_coarse = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
+                              pk_cb_z=pk_cb, k_support=k_support, kwargs...)
+
+    z_fine_arr = z_fine isa Number ? [float(z_fine)] : z_fine
+    Pk_nl_coarse_t = copy(transpose(Pk_nl_coarse))
+    Pk_nl_fine_t = AbstractCosmologicalEmulators.akima_interpolation(Pk_nl_coarse_t, z_coarse, z_fine_arr)
+    Pk_nl_fine = copy(transpose(Pk_nl_fine_t))
+    return z_fine isa Number ? vec(Pk_nl_fine) : Pk_nl_fine
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
+                         z_fine::Union{Real, AbstractVector{<:Real}}, k::AbstractVector{<:Real},
+                         pk_mm_coarse::AbstractMatrix{<:Real}, pk_cb_coarse::AbstractMatrix{<:Real};
+                         kwargs...)
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse;
+                           pk_cb_coarse=pk_cb_coarse, kwargs...)
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
+                         z_fine::Union{Real, AbstractVector{<:Real}},
+                         k_out::AbstractVector{<:Real}, k_support::AbstractVector{<:Real},
+                         pk_mm_support_coarse::AbstractMatrix{<:Real};
+                         pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                         pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                         kwargs...)
+    pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k_out, pk_mm_support_coarse;
+                           k_support=k_support, pk_cb_coarse=pk_cb, kwargs...)
+end
+
+# Boost fast implementations
+"""
+    hmcode_boost_fast(cosmo, z, k, pk_mm_z, N_z_coarse; [pk_cb_z, k_support, pk_cb_support_z, kwargs...])
+    hmcode_boost_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse; [pk_cb_coarse, k_support, pk_cb_support_coarse, kwargs...])
+
+Compute HMCode2020 nonlinear matter power spectrum boost factor B(k,z) using a coarse redshift grid and Akima interpolation.
+
+Warning:
+    This fast API is an approximation. Instead of evaluating the full non-linear
+    HMCode equations on the high-fidelity target grid, it solves HMCode on
+    the coarse grid and uses Akima splines to reconstruct the results.
+    
+    - Typical Errors: Redshift interpolation errors are generally small but largest
+      at high k, high redshift, and in regions where the nonlinear boost factor
+      evolves rapidly.
+    - Recommended Coarse Grid Size:
+        - `N_z_coarse = 10` is NOT precision-safe and can introduce percent-level artifacts.
+        - `N_z_coarse = 50` is a reasonable compromise between speed and accuracy.
+        - `N_z_coarse = 100` is safer, typically guaranteeing sub-percent worst-case
+          accuracy compared to full direct evaluation in studied regimes.
+    - Validation: Users are advised to validate the accuracy of this fast
+      path against the direct `hmcode_boost` function for their specific redshift and
+      k ranges.
+
+Preferred Production Pattern:
+    Using the smart/coarse-grid API is the preferred production pattern:
+    1. Choose `z_coarse` (typically 50-100 nodes linearly spaced).
+    2. Evaluate linear transfer functions/emulators only on `z_coarse`.
+    3. Run HMCode via `hmcode_boost_fast` on `z_coarse`.
+    4. Akima interpolate the final non-linear boost to `z_fine`.
+    This avoids running linear/transfer emulators on the dense fine redshift grid.
+
+Interpolation Target Note:
+    `hmcode_pmm_fast` interpolates the full nonlinear power spectrum P(k,z),
+    whereas `hmcode_boost_fast` interpolates the non-linear boost factor B(k,z).
+    Because these interpolation targets differ, they are not numerically equivalent.
+    For workflows where linear theory is smooth and high accuracy on the nonlinear
+    power spectrum is desired, interpolating P(k,z) directly via `hmcode_pmm_fast`
+    is generally recommended.
+"""
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector,
+                           pk_mm_z::AbstractMatrix, N_z_coarse::Int;
+                           pk_cb_z::Union{Nothing,AbstractMatrix}=nothing,
+                           k_support::Union{Nothing,AbstractVector}=nothing,
+                           pk_cb_support_z::Union{Nothing,AbstractMatrix}=nothing,
+                           kwargs...)
+    N_z_coarse >= 5 || throw(ArgumentError("N_z_coarse must be at least 5."))
+    issorted(z) && all(diff(z) .> 0) || throw(ArgumentError("z must be strictly increasing."))
+
+    k_linear = k_support === nothing ? k : k_support
+    pk_cb_linear_z = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
+    pk_mm, _ = _hmcode_linear_interpolators(z, k_linear, pk_mm_z)
+    pk_mm_out_z = k_support === nothing ? pk_mm_z : _hmcode_matrix_from_interpolator(pk_mm, z, k)
+    return hmcode_pmm_fast(cosmo, z, k, pk_mm_z, N_z_coarse;
+                           k_support=k_support, pk_cb_z=pk_cb_linear_z, kwargs...) ./ pk_mm_out_z
+end
+
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector,
+                           pk_mm_z::AbstractMatrix, pk_cb_z::AbstractMatrix, N_z_coarse::Int; kwargs...)
+    return hmcode_boost_fast(cosmo, z, k, pk_mm_z, N_z_coarse; pk_cb_z=pk_cb_z, kwargs...)
+end
+
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z::AbstractVector,
+                           k_out::AbstractVector, k_support::AbstractVector,
+                           pk_mm_support_z::AbstractMatrix, N_z_coarse::Int;
+                           pk_cb_support_z::Union{Nothing,AbstractMatrix}=nothing,
+                           pk_cb_z::Union{Nothing,AbstractMatrix}=nothing,
+                           kwargs...)
+    pk_cb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
+    return hmcode_boost_fast(cosmo, z, k_out, pk_mm_support_z, N_z_coarse;
+                             k_support=k_support, pk_cb_z=pk_cb, kwargs...)
+end
+
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
+                           pk_mm::AbstractVector, N_z_coarse::Int;
+                           pk_cb::Union{Nothing,AbstractVector}=nothing,
+                           k_support::Union{Nothing,AbstractVector}=nothing,
+                           pk_cb_support::Union{Nothing,AbstractVector}=nothing,
+                           kwargs...)
+    return hmcode_boost(cosmo, z, k, pk_mm; pk_cb=pk_cb, k_support=k_support,
+                        pk_cb_support=pk_cb_support, kwargs...)
+end
+
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
+                           pk_mm::AbstractVector, pk_cb::AbstractVector, N_z_coarse::Int; kwargs...)
+    return hmcode_boost_fast(cosmo, z, k, pk_mm, N_z_coarse; pk_cb=pk_cb, kwargs...)
+end
+
+# Smart signatures for boost: User provides inputs directly on the coarse grid
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
+                           z_fine::Union{Real, AbstractVector{<:Real}}, k::AbstractVector{<:Real},
+                           pk_mm_coarse::AbstractMatrix{<:Real};
+                           pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                           k_support::Union{Nothing,AbstractVector}=nothing,
+                           pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                           kwargs...)
+    length(z_coarse) >= 5 || throw(ArgumentError("z_coarse must have at least 5 points for Akima interpolation."))
+    issorted(z_coarse) && all(diff(z_coarse) .> 0) || throw(ArgumentError("z_coarse must be strictly increasing."))
+
+    if z_fine isa AbstractVector
+        issorted(z_fine) && all(diff(z_fine) .> 0) || throw(ArgumentError("z_fine must be strictly increasing."))
+        all(z_fine .>= minimum(z_coarse)) && all(z_fine .<= maximum(z_coarse)) || throw(ArgumentError("z_fine must lie within the range of z_coarse."))
+    else
+        z_coarse[1] <= z_fine <= z_coarse[end] || throw(ArgumentError("z_fine must lie within the range of z_coarse."))
+    end
+
+    pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    boost_coarse = hmcode_boost(cosmo, z_coarse, k, pk_mm_coarse;
+                                pk_cb_z=pk_cb, k_support=k_support, kwargs...)
+
+    z_fine_arr = z_fine isa Number ? [float(z_fine)] : z_fine
+    boost_coarse_t = copy(transpose(boost_coarse))
+    boost_fine_t = AbstractCosmologicalEmulators.akima_interpolation(boost_coarse_t, z_coarse, z_fine_arr)
+    boost_fine = copy(transpose(boost_fine_t))
+    return z_fine isa Number ? vec(boost_fine) : boost_fine
+end
+
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
+                           z_fine::Union{Real, AbstractVector{<:Real}}, k::AbstractVector{<:Real},
+                           pk_mm_coarse::AbstractMatrix{<:Real}, pk_cb_coarse::AbstractMatrix{<:Real};
+                           kwargs...)
+    return hmcode_boost_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse;
+                             pk_cb_coarse=pk_cb_coarse, kwargs...)
+end
+
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
+                           z_fine::Union{Real, AbstractVector{<:Real}},
+                           k_out::AbstractVector{<:Real}, k_support::AbstractVector{<:Real},
+                           pk_mm_support_coarse::AbstractMatrix{<:Real};
+                           pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                           pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                           kwargs...)
+    pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    return hmcode_boost_fast(cosmo, z_coarse, z_fine, k_out, pk_mm_support_coarse;
+                             k_support=k_support, pk_cb_coarse=pk_cb, kwargs...)
+end
+
+

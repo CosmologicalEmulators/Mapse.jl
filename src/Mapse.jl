@@ -43,6 +43,7 @@ end
 
 const halofit_pmm = halofit_Pmm
 const hmcode_pmm = hmcode_Pmm
+const hmcode_Pmm_fast = hmcode_pmm_fast
 
 export TransferFunctionEmulator, load_emulator,
     artifact_path,
@@ -52,6 +53,6 @@ export TransferFunctionEmulator, load_emulator,
     TRAINED_EMULATOR_ARTIFACTS, lcdm_transfer_function, preprocessing_drop_primordial_parameters,
     postprocessing_lcdm_transfer_ratio,
     HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm, halofit_pmm,
-    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_boost
+    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_boost, hmcode_pmm_fast, hmcode_Pmm_fast, hmcode_boost_fast
 
 end # module
