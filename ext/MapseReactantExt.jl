@@ -8,11 +8,14 @@ import Mapse:
     HMCodeCosmology,
     _HALOFIT_NEWTON_STEPS,
     _halofit_integrate,
+    _halofit_σ2_derivs,
+    _halofit_rnl,
     _halofit_Pmm_one_z_unchecked,
     _halofit_Pmm_unchecked,
     _hmcode_choose_cb,
     halofit_Pmm,
     hmcode_Pmm,
+    hmcode_pmm_fast,
     hmcode_boost
 
 const TracedVec = Reactant.TracedRArray{T,1} where {T}
@@ -130,12 +133,13 @@ function _halofit_σ2_derivs_columns(logk::ReactantVec, k::ReactantVec,
     dsig2dR = -2 .* R_z .* _halofit_integrate_columns(
         logk, integrand_pre .* (k_col .^ 2) .* exp_term
     )
-    d1 = dsig2dR .* R_z ./ sig2
+    is_sig_invalid = (sig2 .<= zero(eltype(sig2))) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf))
+    d1 = ifelse.(is_sig_invalid, eltype(sig2)(NaN), dsig2dR .* R_z ./ sig2)
 
     d2sig2dR2 = _halofit_integrate_columns(
         logk, integrand_pre .* (k_col .^ 2) .* exp_term .* (-2 .+ 4 .* kR2)
     )
-    d2 = (R_z .^ 2 ./ sig2) .* d2sig2dR2 .+ d1 .- d1 .^ 2
+    d2 = ifelse.(is_sig_invalid, eltype(sig2)(NaN), (R_z .^ 2 ./ sig2) .* d2sig2dR2 .+ d1 .- d1 .^ 2)
 
     return sig2, d1, d2
 end
@@ -146,7 +150,11 @@ function _halofit_rnl_columns(logk::ReactantVec, k::ReactantVec,
     lR = sum(pk_lin_mm_z .* 0; dims=1)
     for _ in 1:_HALOFIT_NEWTON_STEPS
         sig2, d1, _ = _halofit_σ2_derivs_columns(logk, k, pk_lin_mm_z, exp.(lR))
-        lR = lR .- log.(sig2) ./ d1
+        is_invalid = (sig2 .<= zero(eltype(sig2))) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf)) .| (d1 .== zero(eltype(d1))) .| (d1 .!= d1) .| (d1 .== eltype(d1)(Inf)) .| (d1 .== eltype(d1)(-Inf))
+        step_raw = ifelse.(is_invalid, eltype(sig2)(NaN), log.(sig2) ./ d1)
+        # Guard against a finite but tiny d1 producing an Inf step.
+        step = ifelse.(~isfinite.(step_raw), eltype(sig2)(NaN), step_raw)
+        lR = lR .- step
     end
 
     return exp.(lR)
@@ -210,6 +218,36 @@ function _halofit_power_columns(cpar::HalofitCosmology, pk_lin_mm_z::ReactantMat
                    (one(T) .+ Δ2_linaa .* α) .* exp.(-y ./ T(4) .- y .^ 2 ./ T(8))
 
     return (pk_halo_dim .+ pk_quasi_dim) ./ (k_col .^ 3 .* anorm)
+end
+
+function _halofit_σ2_derivs(logk::ReactantVec, k::ReactantVec, pk_lin::ReactantVec, R)
+    kR2 = (k .* R) .^ 2
+    exp_term = exp.(-kR2)
+    integrand_pre = (k .^ 3) .* pk_lin ./ (2π^2)
+
+    sig2 = _halofit_integrate(logk, integrand_pre .* exp_term)
+    dsig2dR = -2 * R * _halofit_integrate(logk, integrand_pre .* (k .^ 2) .* exp_term)
+    is_sig_invalid = (sig2 .<= zero(eltype(sig2))) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf))
+    d1 = ifelse(is_sig_invalid, eltype(sig2)(NaN), dsig2dR * R / sig2)
+
+    d2sig2dR2 = _halofit_integrate(logk,
+        integrand_pre .* (k .^ 2) .* exp_term .* (-2 .+ 4 .* kR2))
+    d2 = ifelse(is_sig_invalid, eltype(sig2)(NaN), (R^2 / sig2) * d2sig2dR2 + d1 - d1^2)
+
+    return sig2, d1, d2
+end
+
+function _halofit_rnl(logk::ReactantVec, k::ReactantVec, pk_lin::ReactantVec)
+    lR = zero(eltype(logk))
+    for _ in 1:_HALOFIT_NEWTON_STEPS
+        sig2, d1, _ = _halofit_σ2_derivs(logk, k, pk_lin, exp(lR))
+        is_invalid = (sig2 .<= zero(sig2)) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf)) .| (d1 .== zero(d1)) .| (d1 .!= d1) .| (d1 .== eltype(d1)(Inf)) .| (d1 .== eltype(d1)(-Inf))
+        step_raw = ifelse(is_invalid, eltype(sig2)(NaN), log(sig2) / d1)
+        # Guard against a finite but tiny d1 producing an Inf step.
+        step = ifelse(!isfinite(step_raw), eltype(sig2)(NaN), step_raw)
+        lR -= step
+    end
+    return exp(lR)
 end
 
 function _halofit_Pmm_unchecked(cpar::HalofitCosmology, z::ReactantVec,
@@ -430,6 +468,25 @@ function _hmcode_loglog_interp_columns(k_support, pk_support_kz, k_out)
     islast = reshape(collect(1:nint) .== nint, 1, nint, 1)
     mask = (lx .>= x0) .& ((lx .< x1) .| (islast .& (lx .<= x1)))
     return exp.(reshape(sum(ifelse.(mask, vals, zero(vals)); dims=2), nout, nz))
+end
+
+"""Linear interpolation in log(k) for y values that may be negative (e.g. BAO wiggle)."""
+function _hmcode_linlogk_interp_columns(k_support, wig_sup_kz, k_out)
+    logk = log.(k_support)
+    nout = length(k_out)
+    nz = size(wig_sup_kz, 2)
+    nint = length(k_support) - 1
+    lx = reshape(log.(k_out), nout, 1, 1)
+    x0 = reshape(logk[1:(end - 1)], 1, nint, 1)
+    x1 = reshape(logk[2:end], 1, nint, 1)
+    y0 = reshape(wig_sup_kz[1:(end - 1), :], 1, nint, nz)
+    y1 = reshape(wig_sup_kz[2:end, :], 1, nint, nz)
+    # Linear interpolation of wiggle values (not log), abscissa in log(k)
+    t = (lx .- x0) ./ (x1 .- x0)
+    vals = (1.0 .- t) .* y0 .+ t .* y1
+    islast = reshape(collect(1:nint) .== nint, 1, nint, 1)
+    mask = (lx .>= x0) .& ((lx .< x1) .| (islast .& (lx .<= x1)))
+    return reshape(sum(ifelse.(mask, vals, zero(vals)); dims=2), nout, nz)
 end
 
 function _hmcode_derivative_columns(x_z, xs, fs_mz)
@@ -709,8 +766,11 @@ function _hmcode_assemble_pass(k, z, cosmo::HMCodeCosmology, M, R,
     end
 
     I1h = reshape(sum(W .^ 2 .* reshape(w1h_mz, nM, 1, nz); dims=1), nk, nz) .* ρm
-    x4 = (reshape(k, nk, 1) ./ reshape(params.k_star, 1, nz)) .^ 4
-    p1h = x4 ./ (1.0 .+ x4) .* I1h
+    kstar = reshape(params.k_star, 1, nz)
+    safe_kstar = ifelse.(kstar .> 0.0, kstar, one.(kstar))
+    x4 = (reshape(k, nk, 1) ./ safe_kstar) .^ 4
+    p1h_fac = ifelse.(kstar .> 0.0, x4 ./ (1.0 .+ x4), one.(kstar))
+    p1h = p1h_fac .* I1h
 
     if tweaks
         pk_dwl = pk_lin_kz .- (1.0 .- exp.(-(reshape(k, nk, 1) .* reshape(params.sigma_v, 1, nz)) .^ 2)) .* pk_wig_kz
@@ -735,10 +795,17 @@ function _hmcode_Pmm_reactant(cosmo::HMCodeCosmology, z::ReactantVec, k_out::Rea
     params = _hmcode_compute_params(z, a_grid, growth, agrowth, sigma_mz, R,
                                     k_support, pk_mm_support_kz, cosmo)
     nu_mz = reshape(params.delta_c, 1, :) ./ sigma_mz
-    pk_wig = _hmcode_pk_wiggle_columns(k_out, pk_mm_out, cosmo.h,
-                                       cosmo.Omega_m * cosmo.h^2,
-                                       cosmo.Omega_b * cosmo.h^2,
-                                       cosmo.n_s)
+    # BAO dewiggling must use the validated log-uniform support grid.
+    # _hmcode_pk_wiggle_columns computes dlnk = log(k[2]/k[1]) and applies a
+    # fixed index-space Gaussian. Using k_out here would give the wrong
+    # smoothing width when k_out has different spacing or is irregular.
+    # Compute wiggle on k_support, then interpolate linearly in log(k).
+    pk_wig_sup = _hmcode_pk_wiggle_columns(k_support, pk_mm_support_kz, cosmo.h,
+                                           cosmo.Omega_m * cosmo.h^2,
+                                           cosmo.Omega_b * cosmo.h^2,
+                                           cosmo.n_s)
+    # Linear-in-logk interpolation of wiggle (can be positive or negative)
+    pk_wig = _hmcode_linlogk_interp_columns(k_support, pk_wig_sup, k_out)
     base = _hmcode_assemble_pass(k_out, z, cosmo, M, R, params, sigma_mz, nu_mz,
                                  pk_mm_out, pk_wig, a_grid, growth, growth_lcdm;
                                  tweaks=true, include_feedback=false,
@@ -806,9 +873,17 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
     return vec(out)
 end
 
-function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
-                    pk_mm::ReactantVec, pk_cb::ReactantVec; kwargs...)
+function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number,
+                    k::ReactantVec, pk_mm::ReactantVec,
+                    pk_cb::ReactantVec; kwargs...)
     return hmcode_Pmm(cosmo, z, k, pk_mm; pk_cb=pk_cb, kwargs...)
+end
+
+function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k_out::ReactantVec,
+                    k_support::ReactantVec, pk_mm_support::ReactantVec,
+                    pk_cb_support::ReactantVec; kwargs...)
+    return hmcode_Pmm(cosmo, z, k_out, pk_mm_support;
+                      k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)
 end
 
 function hmcode_boost(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
@@ -858,9 +933,82 @@ function hmcode_boost(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
     return pk_nl ./ pk_lin_out
 end
 
-function hmcode_boost(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
-                      pk_mm::ReactantVec, pk_cb::ReactantVec; kwargs...)
+function hmcode_boost(cosmo::HMCodeCosmology, z::Number,
+                      k::ReactantVec, pk_mm::ReactantVec,
+                      pk_cb::ReactantVec; kwargs...)
     return hmcode_boost(cosmo, z, k, pk_mm; pk_cb=pk_cb, kwargs...)
+end
+
+function hmcode_boost(cosmo::HMCodeCosmology, z::Number, k_out::ReactantVec,
+                      k_support::ReactantVec, pk_mm_support::ReactantVec,
+                      pk_cb_support::ReactantVec; kwargs...)
+    return hmcode_boost(cosmo, z, k_out, pk_mm_support;
+                        k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)
+end
+
+"""
+    hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse, z_fine, k, pk_mm_coarse; kwargs...)
+
+Evaluates HMCode Pmm using Akima interpolation over redshift.
+For Reactant tracing, `z_coarse` and `z_fine` must be strictly increasing,
+and `z_fine` must lie within the bounds of `z_coarse`.
+These preconditions are not checked at trace time; users must validate
+host inputs before device conversion. You can use the native Julia method
+`Mapse.validate_hmcode_fast_grids(z_coarse, z_fine)` to validate these preconditions.
+
+Note: The Reactant extension explicitly supports `hmcode_pmm_fast` only. It does not
+support `hmcode_boost_fast` on traced arrays. For nonlinear boosts, users should evaluate
+`hmcode_pmm_fast` and divide by the linear spectrum appropriately.
+"""
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
+                         z_fine::Union{Number, ReactantVec}, k::ReactantVec,
+                         pk_mm_coarse::ReactantMat;
+                         pk_cb_coarse=nothing, k_support=nothing,
+                         pk_cb_support_coarse=nothing, kwargs...)
+    length(z_coarse) >= 5 || throw(ArgumentError("z_coarse must have at least 5 points for Akima interpolation."))
+    if z_coarse isa Reactant.ConcretePJRTArray
+        z_fine_host = z_fine isa Reactant.ConcretePJRTArray ? Array(z_fine) : z_fine
+        Mapse.validate_hmcode_fast_grids(Array(z_coarse), z_fine_host)
+    end
+    pkcb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    Pk_nl_coarse = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
+                              pk_cb_z=pkcb, k_support=k_support, kwargs...)
+    z_fine_arr = z_fine isa Number ? z_coarse[1:1] .* zero(eltype(z_coarse)) .+ float(z_fine) : z_fine
+    Pk_nl_coarse_t = copy(transpose(Pk_nl_coarse))
+    Pk_nl_fine_t = Mapse.AbstractCosmologicalEmulators.akima_interpolation(Pk_nl_coarse_t, z_coarse, z_fine_arr)
+    Pk_nl_fine = copy(transpose(Pk_nl_fine_t))
+    return z_fine isa Number ? vec(Pk_nl_fine) : Pk_nl_fine
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
+                         z_fine::Union{Number, ReactantVec}, k::ReactantVec,
+                         pk_mm_coarse::ReactantMat, pk_cb_coarse::ReactantMat;
+                         kwargs...)
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse;
+                           pk_cb_coarse=pk_cb_coarse, kwargs...)
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
+                         z_fine::Union{Number, ReactantVec},
+                         k_out::ReactantVec, k_support::ReactantVec,
+                         pk_mm_support_coarse::ReactantMat;
+                         pk_cb_support_coarse::Union{Nothing,ReactantMat}=nothing,
+                         pk_cb_coarse::Union{Nothing,ReactantMat}=nothing,
+                         kwargs...)
+    pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k_out, pk_mm_support_coarse;
+                           k_support=k_support, pk_cb_coarse=pk_cb, kwargs...)
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
+                         z_fine::Union{Number, ReactantVec},
+                         k_out::ReactantVec, k_support::ReactantVec,
+                         pk_mm_support_coarse::ReactantMat,
+                         pk_cb_support_coarse::ReactantMat;
+                         kwargs...)
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k_out, k_support,
+                           pk_mm_support_coarse;
+                           pk_cb_support_coarse=pk_cb_support_coarse, kwargs...)
 end
 
 end # module MapseReactantExt

@@ -53,6 +53,6 @@ export TransferFunctionEmulator, load_emulator,
     TRAINED_EMULATOR_ARTIFACTS, lcdm_transfer_function, preprocessing_drop_primordial_parameters,
     postprocessing_lcdm_transfer_ratio,
     HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm, halofit_pmm,
-    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_boost, hmcode_pmm_fast, hmcode_Pmm_fast, hmcode_boost_fast
+    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_boost, hmcode_pmm_fast, hmcode_Pmm_fast, hmcode_boost_fast, validate_hmcode_fast_grids
 
 end # module

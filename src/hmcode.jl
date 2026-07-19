@@ -27,6 +27,7 @@ function _validate_hmcode_inputs(z::AbstractVector, k::AbstractVector, pk_lin_z:
     length(k) >= 2 || throw(ArgumentError("HMCode requires at least two k values."))
     all(k .> 0) || throw(ArgumentError("HMCode requires strictly positive k values."))
     all(pk_lin_z .> 0) || throw(ArgumentError("HMCode requires strictly positive $name values."))
+    all(isfinite, pk_lin_z) || throw(ArgumentError("HMCode requires finite $name values."))
     all(diff(k) .> 0) || throw(ArgumentError("HMCode requires k values sorted in ascending order."))
     _validate_hmcode_log_grid(k)
     return nothing
@@ -150,22 +151,29 @@ end
     hmcode_Pmm(cosmo, z, k, pk_mm_z, pk_cb_z; kwargs...)
     hmcode_Pmm(cosmo, z, k_out, pk_mm_support_z; k_support, pk_cb_z=nothing, kwargs...)
     hmcode_Pmm(cosmo, z, k_out, k_support, pk_mm_support_z; pk_cb_support_z=nothing, kwargs...)
+    hmcode_Pmm(cosmo, z::Number, k, pk_mm; pk_cb=nothing, k_support=nothing, pk_cb_support=nothing, kwargs...)
 
 Compute the HMCode2020 nonlinear matter power spectrum from a sampled linear
-matter power spectrum. `z` and `k` are vectors, and `pk_mm_z` must have shape
-`(length(k), length(z))`, matching the `halofit_Pmm` convention.
+matter power spectrum. For the vector-redshift methods, `z` and `k` are vectors,
+and `pk_mm_z` must have shape `(length(k), length(z))`, matching the `halofit_Pmm` convention.
+For scalar redshifts `z::Number`, the corresponding linear spectra are 1D vectors of length `length(k)`.
 
 For massive-neutrino cosmologies, pass the cold+baryon linear spectrum with
-`pk_cb_z`. HMCode2020 uses the total matter spectrum for the returned nonlinear
+`pk_cb_z` (or `pk_cb` for scalar forms). HMCode2020 uses the total matter spectrum for the returned nonlinear
 `Pmm`, but uses cold+baryon σ(R,z) quantities internally for halo collapse and
 transition parameters. If `pk_cb_z` is omitted, the total spectrum is used for
 both roles, preserving the old behaviour.
 
 Use `k_support` when the linear spectra are sampled on a wider grid than the
 requested output. In that case `pk_mm_z` and `pk_cb_z` are interpreted on
-`k_support`, while nonlinear power is returned on `k`. This lets σ(R,z) and
+`k_support`, while nonlinear power is returned on `k_out` (or `k`). This lets σ(R,z) and
 HMCode internal parameters use a high-k support grid without evaluating the final
 halo-model spectrum on every support-grid point.
+
+When using a support grid with a scalar redshift, you MUST use the keyword-only
+form (e.g., `hmcode_Pmm(cosmo, z_scalar, k_out, pk_mm_support; k_support=...)`).
+The 5-positional argument form `(cosmo, z, k, pk_mm, pk_cb)` is strictly reserved
+for passing the cold+baryon spectrum without a support grid.
 
 The supplied `k` grid is also used to compute the σ(R,z) integrals required by
 HMCode. It should therefore cover the linear spectrum over a sufficiently broad
@@ -196,7 +204,7 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector
     _, sigma_R_cb = _hmcode_linear_interpolators(
         z, k_linear, pk_cb_linear_z === nothing ? pk_mm_z : pk_cb_linear_z
     )
-    return HMcode.hmcode_power(k, z, pk_mm, sigma_R_cb, cosmo; kwargs...)
+    return HMcode.hmcode_power(k, z, pk_mm, sigma_R_cb, cosmo; k_support=k_support, kwargs...)
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector,
@@ -228,17 +236,27 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
                           k_support=k_support, pk_cb_z=pkcb_mat, kwargs...))
 end
 
-function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
-                    pk_mm::AbstractVector, pk_cb::AbstractVector; kwargs...)
+function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number,
+                    k::AbstractVector, pk_mm::AbstractVector,
+                    pk_cb::AbstractVector; kwargs...)
     return hmcode_Pmm(cosmo, z, k, pk_mm; pk_cb=pk_cb, kwargs...)
+end
+
+function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number,
+                    k_out::AbstractVector, k_support::AbstractVector,
+                    pk_mm_support::AbstractVector, pk_cb_support::AbstractVector;
+                    kwargs...)
+    return hmcode_Pmm(cosmo, z, k_out, pk_mm_support;
+                      k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)
 end
 
 """
     hmcode_boost(cosmo, z, k, pk_mm_z; pk_cb_z=nothing, kwargs...)
     hmcode_boost(cosmo, z, k, pk_mm_z, pk_cb_z; kwargs...)
+    hmcode_boost(cosmo, z::Number, k, pk_mm; pk_cb=nothing, k_support=nothing, pk_cb_support=nothing, kwargs...)
 
 Return the HMCode2020 nonlinear boost, defined as `hmcode_Pmm(...) ./ pk_mm_z`.
-Input shape conventions match `hmcode_Pmm`.
+Input shape conventions and scalar/support-grid API behavior match `hmcode_Pmm`.
 """
 function hmcode_boost(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector,
                       pk_mm_z::AbstractMatrix; pk_cb_z::Union{Nothing,AbstractMatrix}=nothing,
@@ -283,9 +301,18 @@ function hmcode_boost(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
                       kwargs...) ./ pk_mm_out
 end
 
-function hmcode_boost(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
-                      pk_mm::AbstractVector, pk_cb::AbstractVector; kwargs...)
+function hmcode_boost(cosmo::HMCodeCosmology, z::Number,
+                      k::AbstractVector, pk_mm::AbstractVector,
+                      pk_cb::AbstractVector; kwargs...)
     return hmcode_boost(cosmo, z, k, pk_mm; pk_cb=pk_cb, kwargs...)
+end
+
+function hmcode_boost(cosmo::HMCodeCosmology, z::Number,
+                      k_out::AbstractVector, k_support::AbstractVector,
+                      pk_mm_support::AbstractVector, pk_cb_support::AbstractVector;
+                      kwargs...)
+    return hmcode_boost(cosmo, z, k_out, pk_mm_support;
+                        k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)
 end
 
 """
@@ -387,19 +414,21 @@ function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
                       pk_cb_support=pk_cb_support, kwargs...)
 end
 
-function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
-                         pk_mm::AbstractVector, pk_cb::AbstractVector, N_z_coarse::Int; kwargs...)
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::Number,
+                         k::AbstractVector, pk_mm::AbstractVector,
+                         pk_cb::AbstractVector, N_z_coarse::Int; kwargs...)
     return hmcode_pmm_fast(cosmo, z, k, pk_mm, N_z_coarse; pk_cb=pk_cb, kwargs...)
 end
 
-# Smart signatures: User provides inputs directly on the coarse grid
-function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
-                         z_fine::Union{Real, AbstractVector{<:Real}}, k::AbstractVector{<:Real},
-                         pk_mm_coarse::AbstractMatrix{<:Real};
-                         pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
-                         k_support::Union{Nothing,AbstractVector}=nothing,
-                         pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
-                         kwargs...)
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z::Number,
+                         k_out::AbstractVector, k_support::AbstractVector,
+                         pk_mm_support::AbstractVector, pk_cb_support::AbstractVector,
+                         N_z_coarse::Int; kwargs...)
+    return hmcode_pmm_fast(cosmo, z, k_out, pk_mm_support, N_z_coarse;
+                           k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)
+end
+
+function validate_hmcode_fast_grids(z_coarse::AbstractVector, z_fine::Union{Number, AbstractVector})
     length(z_coarse) >= 5 || throw(ArgumentError("z_coarse must have at least 5 points for Akima interpolation."))
     issorted(z_coarse) && all(diff(z_coarse) .> 0) || throw(ArgumentError("z_coarse must be strictly increasing."))
 
@@ -409,6 +438,17 @@ function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real
     else
         z_coarse[1] <= z_fine <= z_coarse[end] || throw(ArgumentError("z_fine must lie within the range of z_coarse."))
     end
+end
+
+# Smart signatures: User provides inputs directly on the coarse grid
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector,
+                         z_fine::Union{Number, AbstractVector}, k::AbstractVector,
+                         pk_mm_coarse::AbstractMatrix;
+                         pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                         k_support::Union{Nothing,AbstractVector}=nothing,
+                         pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                         kwargs...)
+    validate_hmcode_fast_grids(z_coarse, z_fine)
 
     pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
     Pk_nl_coarse = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
@@ -421,24 +461,35 @@ function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real
     return z_fine isa Number ? vec(Pk_nl_fine) : Pk_nl_fine
 end
 
-function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
-                         z_fine::Union{Real, AbstractVector{<:Real}}, k::AbstractVector{<:Real},
-                         pk_mm_coarse::AbstractMatrix{<:Real}, pk_cb_coarse::AbstractMatrix{<:Real};
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector,
+                         z_fine::Union{Number, AbstractVector}, k::AbstractVector,
+                         pk_mm_coarse::AbstractMatrix, pk_cb_coarse::AbstractMatrix;
                          kwargs...)
     return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse;
                            pk_cb_coarse=pk_cb_coarse, kwargs...)
 end
 
-function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Real},
-                         z_fine::Union{Real, AbstractVector{<:Real}},
-                         k_out::AbstractVector{<:Real}, k_support::AbstractVector{<:Real},
-                         pk_mm_support_coarse::AbstractMatrix{<:Real};
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector,
+                         z_fine::Union{Number, AbstractVector},
+                         k_out::AbstractVector, k_support::AbstractVector,
+                         pk_mm_support_coarse::AbstractMatrix;
                          pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
                          pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
                          kwargs...)
     pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
     return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k_out, pk_mm_support_coarse;
                            k_support=k_support, pk_cb_coarse=pk_cb, kwargs...)
+end
+
+function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector,
+                         z_fine::Union{Number, AbstractVector},
+                         k_out::AbstractVector, k_support::AbstractVector,
+                         pk_mm_support_coarse::AbstractMatrix,
+                         pk_cb_support_coarse::AbstractMatrix;
+                         kwargs...)
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k_out, k_support,
+                           pk_mm_support_coarse;
+                           pk_cb_support_coarse=pk_cb_support_coarse, kwargs...)
 end
 
 # Boost fast implementations
@@ -524,9 +575,18 @@ function hmcode_boost_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
                         pk_cb_support=pk_cb_support, kwargs...)
 end
 
-function hmcode_boost_fast(cosmo::HMCodeCosmology, z::Number, k::AbstractVector,
-                           pk_mm::AbstractVector, pk_cb::AbstractVector, N_z_coarse::Int; kwargs...)
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z::Number,
+                           k::AbstractVector, pk_mm::AbstractVector,
+                           pk_cb::AbstractVector, N_z_coarse::Int; kwargs...)
     return hmcode_boost_fast(cosmo, z, k, pk_mm, N_z_coarse; pk_cb=pk_cb, kwargs...)
+end
+
+function hmcode_boost_fast(cosmo::HMCodeCosmology, z::Number,
+                           k_out::AbstractVector, k_support::AbstractVector,
+                           pk_mm_support::AbstractVector, pk_cb_support::AbstractVector,
+                           N_z_coarse::Int; kwargs...)
+    return hmcode_boost_fast(cosmo, z, k_out, pk_mm_support, N_z_coarse;
+                             k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)
 end
 
 # Smart signatures for boost: User provides inputs directly on the coarse grid

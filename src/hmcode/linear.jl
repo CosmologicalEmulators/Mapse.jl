@@ -108,7 +108,6 @@ function sigmaV(
     kmax::Real = Inf,
     eps::Real = 1e-4,
 )
-    # Fast analytic evaluation for specific R ranges or use a slightly looser tolerance
     integrand = if R == 0
         k -> Pk(k)
     else
@@ -120,6 +119,14 @@ function sigmaV(
 end
 
 # Backward-compatible convenience (previous local API)
+"""
+    sigmaV(Pk, kmin::Real = 0.0, kmax::Real = Inf, eps::Real = 1e-4)
+
+Compute the 1D RMS displacement using Pk. Note that when called without explicit `kmin`
+and `kmax` arguments, it defaults to integrating over the infinite range `[0.0, Inf]`,
+which differs from the finite-support production HMCode path that integrates strictly
+over the linear power spectrum support grid.
+"""
 sigmaV(Pk, kmin::Real = 0.0, kmax::Real = Inf, eps::Real = 1e-4) =
     sigmaV(0.0, Pk; kmin=kmin, kmax=kmax, eps=eps)
 

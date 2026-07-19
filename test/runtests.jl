@@ -247,6 +247,25 @@ x3 = Array(LinRange(-1., 1., 100))
                                            nM=64, threaded=false)
     @test size(hmcode_pk_nl_kout) == (length(hmcode_kout), length(hmcode_z))
     @test hmcode_boost_kout ≈ hmcode_pk_nl_kout ./ hmcode_pk_mm[1:2:end, :]
+
+    hmcode_pk_nl = Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z, hmcode_k, hmcode_pk_mm;
+                                    pk_cb_z=hmcode_pk_cb, nM=64, threaded=false)
+    @test hmcode_pk_nl_kout ≈ hmcode_pk_nl[1:2:end, :]
+
+    hmcode_kout_irr = copy(hmcode_kout)
+    hmcode_kout_irr[10] = (hmcode_kout[9] + hmcode_kout[10]) / 2
+    hmcode_pk_nl_kout_irr = Mapse.hmcode_pmm(hmcode_cosmo, hmcode_z, hmcode_kout_irr,
+                                             hmcode_k, hmcode_pk_mm;
+                                             pk_cb_support_z=hmcode_pk_cb,
+                                             nM=64, threaded=false)
+    @test size(hmcode_pk_nl_kout_irr) == (length(hmcode_kout_irr), length(hmcode_z))
+
+    # We test that hmcode_pk_nl_kout_irr is close to interpolating hmcode_pk_nl to kout_irr
+    for iz in 1:length(hmcode_z)
+        itp = AkimaInterpolation(hmcode_pk_nl[:, iz], log.(hmcode_k))
+        @test itp.(log.(hmcode_kout_irr)) ≈ hmcode_pk_nl_kout_irr[:, iz] rtol=5e-3
+    end
+
     @test Mapse.hmcode_pmm(hmcode_cosmo, 0.0, hmcode_kout, hmcode_pk_mm[:, 1];
                            k_support=hmcode_k, pk_cb_support=hmcode_pk_cb[:, 1],
                            nM=64, threaded=false) ≈ hmcode_pk_nl_kout[:, 1]
@@ -452,3 +471,118 @@ end
 
 include("test_halofit_reactant.jl")
 include("test_hmcode_reactant.jl")
+
+@testset "HMCode-2020 Baryonic Response vs Patched CLASS" begin
+    # UCF-2: Direct helper invariant test
+    dummy_params = Mapse.HMcode.HMcodeParams(ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), fill(1.23, 10), ones(10), ones(10))
+    notweaks_params = Mapse.HMcode._hmcode_notweaks_params(dummy_params)
+    @test notweaks_params.k_star == fill(1.23, 10)
+    @test notweaks_params.eta == zeros(10)
+    @test notweaks_params.A == ones(10)
+    @test notweaks_params.f_damp == zeros(10)
+    @test notweaks_params.B == fill(4.0, 10)
+    @test notweaks_params.k_damp == zeros(10)
+
+    fixture_path_ref = joinpath(@__DIR__, "data", "hmcode_class_feedback_reference.txt")
+    fixture_path_sup = joinpath(@__DIR__, "data", "hmcode_class_linear_support.txt")
+
+    # Canonical fixture: schema, headers, shape, domain
+    raw_header_ref = readlines(fixture_path_ref)[1:9]
+    @test occursin("HMCode2020 feedback reference", raw_header_ref[1])
+    @test occursin("fixture_schema_version: 1", raw_header_ref[2])
+    @test occursin("class_patch: CAMB_PR_136_low_k_response_cutoff", raw_header_ref[4])
+    @test occursin("domain: canonical test region k <= 10 h/Mpc", join(raw_header_ref, "\n"))
+
+    data_ref = readdlm(fixture_path_ref, comments=true)
+    @test size(data_ref) == (705, 8)
+
+    # Support fixture: schema, headers, shape, domain
+    raw_header_sup = readlines(fixture_path_sup)[1:9]
+    @test occursin("fixture_schema_version: 1", raw_header_sup[2])
+    @test occursin("domain: linear support grid k <= 50 h/Mpc", join(raw_header_sup, "\n"))
+
+    data_sup = readdlm(fixture_path_sup, comments=true)
+    @test size(data_sup) == (805, 4)
+
+    # Domain bounds and per-redshift counts
+    k_ref_z0 = data_ref[data_ref[:, 1] .== data_ref[1, 1], 2]
+    k_sup_z0 = data_sup[data_sup[:, 1] .== data_sup[1, 1], 2]
+    @test length(k_ref_z0) == 141
+    @test length(k_sup_z0) == 161
+    @test maximum(k_ref_z0) ≈ 9.696137237434288 rtol=1e-5
+    @test maximum(k_sup_z0) ≈ 50.0 rtol=1e-5
+
+    # Finite and positive values
+    @test all(isfinite, data_ref)
+    @test all(isfinite, data_sup)
+    @test all(>(0), k_ref_z0)
+    @test all(>(0), k_sup_z0)
+
+    # Matching redshift grids
+    z_ref = unique(data_ref[:, 1])
+    z_sup_all = unique(data_sup[:, 1])
+    @test z_ref == z_sup_all
+
+    # Canonical k-grid is a subset of support k-grid
+    k_sup_set = Set(round.(k_sup_z0, digits=12))
+    @test all(k -> round(k, digits=12) ∈ k_sup_set, k_ref_z0)
+
+    z_vals = z_sup_all
+    k_vals = k_sup_z0
+    k_ref_vals = k_ref_z0
+    nz = length(z_vals)
+    nk = length(k_vals)
+    nk_ref = length(k_ref_vals)
+
+    pk_mm_lin = zeros(nk, nz)
+    pk_cb_lin = zeros(nk, nz)
+    boost_ref = zeros(nk_ref, nz)
+    dmo_boost_ref = zeros(nk_ref, nz)
+
+    for iz in 1:nz
+        mask_sup = data_sup[:, 1] .== z_vals[iz]
+        mask_ref = data_ref[:, 1] .== z_vals[iz]
+        pk_mm_lin[:, iz] = data_sup[mask_sup, 3]
+        pk_cb_lin[:, iz] = data_sup[mask_sup, 4]
+        boost_ref[:, iz] = data_ref[mask_ref, 6]
+        dmo_boost_ref[:, iz] = data_ref[mask_ref, 8]
+    end
+
+    cosmo = Mapse.HMcode.HMcodeCosmology(
+        0.315192,
+        0.04930,
+        0.6736,
+        0.9649,
+        0.8109118,
+        -1.0,
+        0.0,
+        0.001422,
+        0.0
+    )
+
+    dmo = Mapse.hmcode_pmm(cosmo, z_vals, k_vals, pk_mm_lin; pk_cb_z=pk_cb_lin, T_AGN=nothing)
+    feedback = Mapse.hmcode_pmm(cosmo, z_vals, k_vals, pk_mm_lin; pk_cb_z=pk_cb_lin, T_AGN=10.0^7.8)
+
+    boost = feedback ./ pk_mm_lin
+    dmo_boost = dmo ./ pk_mm_lin
+
+    mask10 = k_vals .<= 10.0
+    boost_masked = boost[mask10, :]
+
+    err_boost = abs.(boost_masked .- boost_ref) ./ boost_ref
+
+    @test maximum(err_boost) < 5.0e-3
+
+    err_dmo = abs.(dmo_boost[mask10, :] .- dmo_boost_ref) ./ dmo_boost_ref
+    @test maximum(err_dmo) < 3.0e-3
+
+    mask_low_k = k_vals .<= 3e-4
+    @test boost[mask_low_k, :] ≈ dmo_boost[mask_low_k, :] rtol=1e-3
+    @test boost[mask_low_k, :] ≈ ones(count(mask_low_k), nz) rtol=1e-3
+
+    z_fine = collect(LinRange(minimum(z_vals), maximum(z_vals), 25))
+    fast_dmo = Mapse.hmcode_pmm_fast(cosmo, z_vals, z_fine, k_vals, pk_mm_lin; pk_cb_coarse=pk_cb_lin, T_AGN=nothing, nM=64, threaded=false)
+    fast_feedback = Mapse.hmcode_pmm_fast(cosmo, z_vals, z_fine, k_vals, pk_mm_lin; pk_cb_coarse=pk_cb_lin, T_AGN=10.0^7.8, nM=64, threaded=false)
+    fast_response = fast_feedback ./ fast_dmo
+    @test fast_response[mask_low_k, :] ≈ ones(count(mask_low_k), length(z_fine)) rtol=1e-3
+end

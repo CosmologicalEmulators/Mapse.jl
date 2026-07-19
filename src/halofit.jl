@@ -168,6 +168,10 @@ function _halofit_σ2_derivs(logk, k, pk_lin, R)
     integrand_pre = (k .^ 3) .* pk_lin ./ (2π^2)
 
     sig2 = _halofit_integrate(logk, integrand_pre .* exp_term)
+    if !isfinite(sig2) || sig2 <= zero(sig2)
+        return sig2, eltype(sig2)(NaN), eltype(sig2)(NaN)
+    end
+
     dsig2dR = -2 * R * _halofit_integrate(logk, integrand_pre .* (k .^ 2) .* exp_term)
     d1 = dsig2dR * R / sig2
 
@@ -182,7 +186,14 @@ function _halofit_rnl(logk, k, pk_lin)
     lR = zero(eltype(logk))
     for _ in 1:_HALOFIT_NEWTON_STEPS
         sig2, d1, _ = _halofit_σ2_derivs(logk, k, pk_lin, exp(lR))
-        lR -= log(sig2) / d1
+        if !isfinite(sig2) || sig2 <= zero(sig2) || !isfinite(d1) || d1 == zero(d1)
+            return eltype(sig2)(NaN)
+        end
+        step = log(sig2) / d1
+        if !isfinite(step)
+            return eltype(sig2)(NaN)
+        end
+        lR -= step
     end
     return exp(lR)
 end
@@ -272,6 +283,8 @@ function _validate_halofit_inputs(z::AbstractVector, k::AbstractVector, pk_lin_m
     ))
     all(k .> 0) || throw(ArgumentError("Halofit requires strictly positive k values."))
     all(diff(k) .> 0) || throw(ArgumentError("Halofit requires k values sorted in ascending order."))
+    all(isfinite, pk_lin_mm_z) || throw(ArgumentError("Halofit requires finite power spectrum values."))
+    all(pk_lin_mm_z .> 0) || throw(ArgumentError("Halofit requires strictly positive power spectrum values."))
     return nothing
 end
 
