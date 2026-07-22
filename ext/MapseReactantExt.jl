@@ -729,8 +729,7 @@ const _HMCODE_P_F_ASYM_DEN = (1.0, 1122.3059690217168, 436852.7097485132, 746547
 const _HMCODE_R_G_ASYM_NUM = (5.999999999999999, 9652.774604499714, 5607762.699656884, 1502266771.8927317, 196442710647.33087, 121913682811632.5, 3192438989864569.5, 2.5876053010027484e16, 1.2754978896268878e16)
 const _HMCODE_R_G_ASYM_DEN = (1.0, 1628.7957674166142, 966363.0319578709, 268397347.5095067, 37388510548.052925, 2602858566615.2144, 85134283716949.72, 1130407936162795.2, 4251984147948980.0)
 
-function _hmcode_si_fast(x)
-    small = x .* evalpoly.(x .* x, Ref(_HMCODE_SI_SMALL))
+function _hmcode_sici_fast(x)
     t = x .* x
     invt = 1.0 ./ t
     sx, cx = sin.(x), cos.(x)
@@ -740,30 +739,30 @@ function _hmcode_si_fast(x)
     g_asym = (1.0 .- evalpoly.(invt, Ref(_HMCODE_R_G_ASYM_NUM)) .* invt ./ evalpoly.(invt, Ref(_HMCODE_R_G_ASYM_DEN))) .* invt
     f = ifelse.(t .<= 144.0, f_rat, f_asym)
     g = ifelse.(t .<= 144.0, g_rat, g_asym)
-    large = pi / 2.0 .- f .* cx .- g .* sx
-    return ifelse.(x .<= 4.0, small, large)
-end
-
-function _hmcode_ci_fast(x)
-    small = _HMCODE_EULER_GAMMA .+ log.(x) .+ x .* x .* evalpoly.(x .* x, Ref(_HMCODE_CI_INT_SMALL))
-    t = x .* x
-    invt = 1.0 ./ t
-    sx, cx = sin.(x), cos.(x)
-    f_rat = (evalpoly.(invt, Ref(_HMCODE_P_F_RAT1)) ./ evalpoly.(invt, Ref(_HMCODE_Q_F_RAT1))) ./ x
-    g_rat = (evalpoly.(invt, Ref(_HMCODE_R_G_RAT1)) ./ evalpoly.(invt, Ref(_HMCODE_S_G_RAT1))) .* invt
-    f_asym = (1.0 .- evalpoly.(invt, Ref(_HMCODE_P_F_ASYM_NUM)) .* invt ./ evalpoly.(invt, Ref(_HMCODE_P_F_ASYM_DEN))) ./ x
-    g_asym = (1.0 .- evalpoly.(invt, Ref(_HMCODE_R_G_ASYM_NUM)) .* invt ./ evalpoly.(invt, Ref(_HMCODE_R_G_ASYM_DEN))) .* invt
-    f = ifelse.(t .<= 144.0, f_rat, f_asym)
-    g = ifelse.(t .<= 144.0, g_rat, g_asym)
-    large = f .* sx .- g .* cx
-    return ifelse.(x .<= 4.0, small, large)
+    
+    si_large = pi / 2.0 .- f .* cx .- g .* sx
+    ci_large = f .* sx .- g .* cx
+    
+    si_small = x .* evalpoly.(t, Ref(_HMCODE_SI_SMALL))
+    ci_small = _HMCODE_EULER_GAMMA .+ log.(x) .+ t .* evalpoly.(t, Ref(_HMCODE_CI_INT_SMALL))
+    
+    is_small = x .<= 4.0
+    si = ifelse.(is_small, si_small, si_large)
+    ci = ifelse.(is_small, ci_small, ci_large)
+    
+    return si, ci
 end
 
 function _hmcode_wnfw_fast(x, c, ln1pc)
     xplus = x .* (1.0 .+ 1.0 ./ c)
     xminus = x ./ c
-    dsi = _hmcode_si_fast(xplus) .- _hmcode_si_fast(xminus)
-    dci = _hmcode_ci_fast(xplus) .- _hmcode_ci_fast(xminus)
+    
+    si_plus, ci_plus = _hmcode_sici_fast(xplus)
+    si_minus, ci_minus = _hmcode_sici_fast(xminus)
+    
+    dsi = si_plus .- si_minus
+    dci = ci_plus .- ci_minus
+    
     sinc_xp = sin.(x) ./ xplus
     norm = ln1pc .- c ./ (1.0 .+ c)
     return (dsi .* sin.(xminus) .+ dci .* cos.(xminus) .- sinc_xp) ./ norm

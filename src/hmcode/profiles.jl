@@ -90,10 +90,7 @@ const P_F_ASYM_DEN = (1.0, 0.11223059690217167788E4, 0.43685270974851313242E6, 0
 const R_G_ASYM_NUM = (0.59999999999999993089E1, 0.96527746044997139158E4, 0.56077626996568834185E7, 0.15022667718927317198E10, 0.19644271064733088465E12, 0.12191368281163225043E14, 0.31924389898645609533E15, 0.25876053010027485934E16, 0.12754978896268878403E16)
 const R_G_ASYM_DEN = (1.0, 0.16287957674166143196E4, 0.96636303195787870963E6, 0.26839734750950667021E9, 0.37388510548029219241E11, 0.26028585666152144496E13, 0.85134283716950697226E14, 0.11304079361627952930E16, 0.42519841479489798424E16)
 
-@inline function si_fast(x::Float64)::Float64
-    if x <= 4.0
-        return si_small(x)
-    end
+@inline function sici_fast(x::Float64)
     t = x*x
     invt = inv(t)
     sx, cx = sin(x), cos(x)
@@ -104,24 +101,14 @@ const R_G_ASYM_DEN = (1.0, 0.16287957674166143196E4, 0.96636303195787870963E6, 0
         f = (1.0 - evalpoly(invt, P_F_ASYM_NUM) * invt / evalpoly(invt, P_F_ASYM_DEN)) / x
         g = (1.0 - evalpoly(invt, R_G_ASYM_NUM) * invt / evalpoly(invt, R_G_ASYM_DEN)) * invt
     end
-    return pi/2.0 - f*cx - g*sx
-end
-
-@inline function ci_fast(x::Float64)::Float64
+    
+    si_large = pi/2.0 - f*cx - g*sx
+    ci_large = f*sx - g*cx
+    
     if x <= 4.0
-        return EULER_GAMMA + log(x) + ci_int_small(x)
+        return si_small(x), EULER_GAMMA + log(x) + ci_int_small(x)
     end
-    t = x*x
-    invt = inv(t)
-    sx, cx = sin(x), cos(x)
-    if t <= 144.0
-        f = (evalpoly(invt, P_F_RAT1) / evalpoly(invt, Q_F_RAT1)) / x
-        g = (evalpoly(invt, R_G_RAT1) / evalpoly(invt, S_G_RAT1)) * invt
-    else
-        f = (1.0 - evalpoly(invt, P_F_ASYM_NUM) * invt / evalpoly(invt, P_F_ASYM_DEN)) / x
-        g = (1.0 - evalpoly(invt, R_G_ASYM_NUM) * invt / evalpoly(invt, R_G_ASYM_DEN)) * invt
-    end
-    return f*sx - g*cx
+    return si_large, ci_large
 end
 
 # ------------------------------------------------------------
@@ -147,8 +134,13 @@ end
 @inline function wnfw_fast(x::Float64, c::Float64, ln1pc::Float64)::Float64
     x_plus  = x * (1.0 + 1.0/c)
     x_minus = x / c
-    ΔSi = si_fast(x_plus) - si_fast(x_minus)
-    ΔCi = ci_fast(x_plus) - ci_fast(x_minus)
+    
+    si_plus, ci_plus = sici_fast(x_plus)
+    si_minus, ci_minus = sici_fast(x_minus)
+    
+    ΔSi = si_plus - si_minus
+    ΔCi = ci_plus - ci_minus
+    
     s, cv = sin(x_minus), cos(x_minus)
     sinc_xp = sin(x) / x_plus
     norm = ln1pc - c/(1.0 + c)
