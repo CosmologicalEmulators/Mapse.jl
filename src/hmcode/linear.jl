@@ -94,7 +94,22 @@ function get_nonlinear_radius(
     sigmaR_func,
 )
     root_func = R -> sigmaR_func(R) - dc
-    return find_zero(root_func, (float(Rmin), float(Rmax)), A42())
+    rmin, rmax = float(Rmin), float(Rmax)
+    fmin, fmax = root_func(rmin), root_func(rmax)
+
+    # Match the clamped inverse interpolation used by the JAX kernel when the
+    # supplied k support does not contain enough power to bracket sigma(R)=dc.
+    # This occurs for deliberately reduced k ranges. Do not ask Roots to solve
+    # a non-existent bracket.
+    if fmin == 0
+        return rmin
+    elseif fmax == 0
+        return rmax
+    elseif signbit(fmin) == signbit(fmax)
+        return fmin < 0 ? rmin : rmax
+    end
+
+    return find_zero(root_func, (rmin, rmax), A42())
 end
 
 """

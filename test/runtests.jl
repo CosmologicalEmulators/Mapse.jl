@@ -408,6 +408,12 @@ x3 = Array(LinRange(-1., 1., 100))
     @test length(pk_smart_scalar) == length(hmcode_k)
     @test all(isfinite, pk_smart_scalar)
 
+    # Reduced k support can leave sigma(R)=delta_c unbracketed. The radius
+    # helper must clamp to the corresponding support endpoint instead of
+    # throwing from the bracketing root solver.
+    @test Mapse.HMcode.get_nonlinear_radius(1.0, 10.0, 100.0, R -> 1.0 / R) == 1.0
+    @test Mapse.HMcode.get_nonlinear_radius(1.0, 10.0, 0.01, R -> 1.0 / R) == 10.0
+
     # Grid and parameter validation checks for fast APIs
 
     @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine, 4; pk_cb_z=pk_cb_fine)

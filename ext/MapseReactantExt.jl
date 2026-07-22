@@ -43,6 +43,7 @@ import Mapse:
     hmcode_boost,
     predict_baryonic_discontinuity,
     build_smart_coarse_grid,
+    build_piecewise_coarse_grid,
     hmcode_pmm_baryonic_smart
 
 const TracedVec = Reactant.TracedRArray{T,1} where {T}
@@ -1191,47 +1192,39 @@ end
 function hmcode_pmm_baryonic_smart(cosmo::HMCodeCosmology, z_fine::ReactantVec,
                                   k::ReactantVec, pk_mm_coarse::ReactantMat;
                                   pk_cb_coarse=nothing, N_coarse::Int=50, T_AGN::Real=10^7.8, kwargs...)
-    z_host = z_fine isa Number ? Float64(z_fine) : Array(z_fine)
-    z_min = z_host isa Real ? Float64(z_host) : minimum(z_host)
-    z_max = z_host isa Real ? Float64(z_host) : maximum(z_host)
-    if z_min >= z_max || (z_host isa AbstractVector && length(z_host) <= N_coarse)
-        if z_fine isa Number
-            pk_mm_vec = size(pk_mm_coarse, 2) == 1 ? vec(pk_mm_coarse) : vec(pk_mm_coarse[:, 1])
-            pk_cb_vec = isnothing(pk_cb_coarse) ? nothing : (size(pk_cb_coarse, 2) == 1 ? vec(pk_cb_coarse) : vec(pk_cb_coarse[:, 1]))
-            return hmcode_Pmm(cosmo, z_fine, k, pk_mm_vec; pk_cb=pk_cb_vec, T_AGN=T_AGN, kwargs...)
-        else
-            return hmcode_Pmm(cosmo, z_fine, k, pk_mm_coarse; pk_cb_z=pk_cb_coarse, T_AGN=T_AGN, kwargs...)
-        end
-    end
+    z_min = minimum(z_fine; dims=1)
+    z_max = maximum(z_fine; dims=1)
 
     z_feature = predict_baryonic_discontinuity(cosmo; T_AGN=T_AGN)
-    z_coarse = build_smart_coarse_grid(z_min, z_max, N_coarse, z_feature)
+    N_left = N_coarse ÷ 2
+    z_coarse = build_piecewise_coarse_grid(
+        vcat(z_min, z_max, z_min .* 0 .+ z_feature),
+        N_coarse, N_left)
 
-    pk_mm_coarse_eval = if size(pk_mm_coarse, 2) == length(z_host) && length(z_host) != length(z_coarse)
-        pk_mm_t = copy(transpose(Array(pk_mm_coarse)))
-        pk_mm_coarse_t = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_mm_t, z_host, z_coarse)
-        Reactant.to_rarray(copy(transpose(pk_mm_coarse_t)))
+    pk_mm_coarse_eval = if size(pk_mm_coarse, 2) == length(z_fine) && length(z_fine) != length(z_coarse)
+        pk_mm_t = copy(transpose(pk_mm_coarse))
+        pk_mm_coarse_t = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_mm_t, z_fine, z_coarse)
+        copy(transpose(pk_mm_coarse_t))
     else
         pk_mm_coarse
     end
 
-    pk_cb_coarse_eval = if !isnothing(pk_cb_coarse) && size(pk_cb_coarse, 2) == length(z_host) && length(z_host) != length(z_coarse)
-        pk_cb_t = copy(transpose(Array(pk_cb_coarse)))
-        pk_cb_coarse_t = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_cb_t, z_host, z_coarse)
-        Reactant.to_rarray(copy(transpose(pk_cb_coarse_t)))
+    pk_cb_coarse_eval = if !isnothing(pk_cb_coarse) && size(pk_cb_coarse, 2) == length(z_fine) && length(z_fine) != length(z_coarse)
+        pk_cb_t = copy(transpose(pk_cb_coarse))
+        pk_cb_coarse_t = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_cb_t, z_fine, z_coarse)
+        copy(transpose(pk_cb_coarse_t))
     else
         pk_cb_coarse
     end
 
-    z_coarse_r = Reactant.to_rarray(Float64.(z_coarse))
-    nleft = searchsortedlast(z_coarse, z_feature)
+    nleft = N_left + 1
     if nleft >= 5 && nleft <= length(z_coarse) - 4
-        return hmcode_pmm_fast_two_splines(cosmo, z_coarse_r, z_fine, k, pk_mm_coarse_eval;
+        return hmcode_pmm_fast_two_splines(cosmo, z_coarse, z_fine, k, pk_mm_coarse_eval;
                                            pk_cb_coarse=pk_cb_coarse_eval,
                                            z_split=z_feature, split_index=nleft,
                                            T_AGN=T_AGN, kwargs...)
     end
-    return hmcode_pmm_fast(cosmo, z_coarse_r, z_fine, k, pk_mm_coarse_eval;
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse_eval;
                            pk_cb_coarse=pk_cb_coarse_eval, T_AGN=T_AGN, kwargs...)
 end
 
