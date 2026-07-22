@@ -44,6 +44,7 @@ end
 const halofit_pmm = halofit_Pmm
 const hmcode_pmm = hmcode_Pmm
 const hmcode_Pmm_fast = hmcode_pmm_fast
+const hmcode_Pmm_baryonic_smart = hmcode_pmm_baryonic_smart
 
 export TransferFunctionEmulator, load_emulator,
     artifact_path,
@@ -53,6 +54,7 @@ export TransferFunctionEmulator, load_emulator,
     TRAINED_EMULATOR_ARTIFACTS, lcdm_transfer_function, preprocessing_drop_primordial_parameters,
     postprocessing_lcdm_transfer_ratio,
     HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm, halofit_pmm,
-    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_boost, hmcode_pmm_fast, hmcode_Pmm_fast, hmcode_boost_fast, validate_hmcode_fast_grids
+    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_pmm_physical, hmcode_pmm_fast_physical, hmcode_boost, hmcode_pmm_fast, hmcode_pmm_fast_two_splines, hmcode_Pmm_fast, hmcode_boost_fast, validate_hmcode_fast_grids,
+    predict_baryonic_discontinuity, build_smart_coarse_grid, build_piecewise_coarse_grid, build_baryonic_coarse_grid, hmcode_pmm_baryonic_smart, hmcode_Pmm_baryonic_smart
 
 end # module

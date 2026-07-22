@@ -4,16 +4,16 @@ using Integrals
 using OrdinaryDiffEqTsit5
 using OrdinaryDiffEqCore
 
-struct HMcodeCosmology
-    Omega_m::Float64
-    Omega_b::Float64
-    h::Float64
-    n_s::Float64
-    sigma_8::Float64
-    w0::Float64
-    wa::Float64
-    Omega_nu::Float64
-    Omega_k::Float64
+struct HMcodeCosmology{T1,T2,T3,T4,T5,T6,T7,T8,T9}
+    Omega_m::T1
+    Omega_b::T2
+    h::T3
+    n_s::T4
+    sigma_8::T5
+    w0::T6
+    wa::T7
+    Omega_nu::T8
+    Omega_k::T9
 end
 
 const rho_critical = 2.77536627245708E11 # Msun/h / (Mpc/h)^3

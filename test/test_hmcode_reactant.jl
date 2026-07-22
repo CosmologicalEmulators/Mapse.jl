@@ -10,6 +10,23 @@ using Mapse
     @test !isnothing(ext)
     @test !occursin("@allowscalar", read(joinpath(pkgdir(Mapse), "ext", "MapseReactantExt.jl"), String))
 
+    # Grid construction is part of the traced MCMC kernel: cosmology and
+    # feedback parameters move the feature without recompilation or host I/O.
+    grid_params1 = Reactant.to_rarray([3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0])
+    grid_params2 = Reactant.to_rarray([3.044, 0.9649, 70.0, 0.024, 0.11, 0.10, -0.9, 0.1])
+    grid_zlimits = Reactant.to_rarray([0.0, 3.5])
+    grid_logT1 = Reactant.to_rarray([7.8])
+    grid_logT2 = Reactant.to_rarray([8.0])
+    grid_kernel(p, zl, lt) = Mapse.build_baryonic_coarse_grid(p, zl, lt, 20, 12)
+    compiled_grid = Reactant.@compile sync=true grid_kernel(grid_params1, grid_zlimits, grid_logT1)
+    device_grid1 = Array(compiled_grid(grid_params1, grid_zlimits, grid_logT1))
+    device_grid2 = Array(compiled_grid(grid_params2, grid_zlimits, grid_logT2))
+    @test length(device_grid1) == 20
+    @test all(diff(device_grid1) .> 0)
+    @test all(diff(device_grid2) .> 0)
+    @test device_grid1[13] ≈ Mapse.predict_baryonic_discontinuity(Array(grid_params1); T_AGN=10.0^7.8)
+    @test device_grid1 != device_grid2
+
     hmcode_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_camb_reference.txt"), comments=true)
     z_all = unique(hmcode_reference[:, 1])
     k_support = collect(hmcode_reference[hmcode_reference[:, 1] .== z_all[1], 2])
@@ -34,6 +51,19 @@ using Mapse
     native_boost = Mapse.hmcode_boost(cosmo, z, k_out, k_support, pk_mm;
                                       pk_cb_support_z=pk_cb, nM=32,
                                       threaded=false)
+
+    # Public physical-unit boundary: the wrapper must agree with the internal
+    # HMCode calculation after the explicit k/P unit conversion.
+    physical_pmm = Mapse.hmcode_pmm_physical(
+        cosmo, z, k_out, pk_mm;
+        k_support=k_support, pk_cb_support_z=pk_cb, nM=32, threaded=false,
+    )
+    expected_physical_pmm = Mapse.hmcode_Pmm(
+        cosmo, z, k_out ./ h, k_support ./ h, pk_mm .* h^3;
+        pk_cb_support_z=pk_cb .* h^3, nM=32, threaded=false,
+    ) ./ h^3
+    @test physical_pmm ≈ expected_physical_pmm rtol=1e-12 atol=1e-12
+    @test all(isfinite, physical_pmm)
 
     zR = Reactant.to_rarray(z)
     k_outR = Reactant.to_rarray(k_out)
@@ -176,6 +206,41 @@ using Mapse
     @test size(Array(out_scalar_bar)) == size(native_scalar_bar)
     @test Array(out_scalar_bar) ≈ native_scalar_bar rtol=1.5e-2
 
+    # Two-spline Reactant path. The split is an explicit coarse-grid node;
+    # both Akima segments therefore have enough nodes for compilation.
+    z_two_coarse = collect(range(0.0, 3.0, length=10))
+    z_two_fine = collect(range(0.0, 3.0, length=20))
+    pk_mm_two = repeat(pk_mm_all[:, 1], 1, length(z_two_coarse))
+    pk_cb_two = repeat(pk_cb_all[:, 1], 1, length(z_two_coarse))
+    z_two_coarseR = Reactant.to_rarray(z_two_coarse)
+    z_two_fineR = Reactant.to_rarray(z_two_fine)
+    pk_mm_twoR = Reactant.to_rarray(pk_mm_two)
+    pk_cb_twoR = Reactant.to_rarray(pk_cb_two)
+    z_split_two = z_two_coarse[6]
+    native_two = Mapse.hmcode_pmm_fast_two_splines(
+        cosmo, z_two_coarse, z_two_fine, k_support, pk_mm_two;
+        pk_cb_coarse=pk_cb_two, z_split=z_split_two, T_AGN=10^7.8, nM=32,
+        threaded=false)
+    reactant_two = Mapse.hmcode_pmm_fast_two_splines(
+        cosmo, z_two_coarseR, z_two_fineR, k_supportR, pk_mm_twoR;
+        pk_cb_coarse=pk_cb_twoR, z_split=z_split_two, split_index=6,
+        T_AGN=10^7.8, nM=32)
+    Reactant.synchronize(reactant_two)
+    @test size(Array(reactant_two)) == size(native_two)
+    @test all(isfinite, Array(reactant_two))
+    @test Array(reactant_two) ≈ native_two rtol=1.5e-2
+
+    f_two(c, zc, zf, k, pm, pc) = Mapse.hmcode_pmm_fast_two_splines(
+        c, zc, zf, k, pm; pk_cb_coarse=pc, z_split=z_split_two,
+        split_index=6,
+        T_AGN=10^7.8, nM=32)
+    compiled_two = Reactant.@compile f_two(
+        cosmo, z_two_coarseR, z_two_fineR, k_supportR, pk_mm_twoR, pk_cb_twoR)
+    out_two = compiled_two(cosmo, z_two_coarseR, z_two_fineR,
+                           k_supportR, pk_mm_twoR, pk_cb_twoR)
+    Reactant.synchronize(out_two)
+    @test Array(out_two) ≈ native_two rtol=1.5e-2
+
     # Compiled positional support-grid check (DMO)
     f_pos_dmo(c, zc, zf, k_out, k_sup, pm_sup) = Mapse.hmcode_pmm_fast(c, zc, zf, k_out, k_sup, pm_sup; T_AGN=nothing, nM=32)
     compiled_pos_dmo = Reactant.@compile f_pos_dmo(cosmo, z_coarseR_arr, z_fineR_arr, k_supportR, k_supportR, pk_mm_allR)
@@ -194,6 +259,14 @@ using Mapse
     native_pos_bar = Mapse.hmcode_pmm_fast(cosmo, z_coarse_arr, z_fine_arr, k_support, k_support, pk_mm_synth, pk_cb_synth; T_AGN=10^7.8, nM=32, threaded=false)
     @test size(Array(out_pos_bar)) == size(native_pos_bar)
     @test Array(out_pos_bar) ≈ native_pos_bar rtol=1.5e-2
+
+    # Test smart baryonic API (Reactant compiled)
+    pk_mm_smartR = Reactant.to_rarray(repeat(pk_mm_all[:, 1], 1, length(z_fine_arr)))
+    smart_barR = Mapse.hmcode_pmm_baryonic_smart(cosmo, z_fineR_arr, k_supportR, pk_mm_smartR; N_coarse=20, T_AGN=10^7.8, nM=32)
+    Reactant.synchronize(smart_barR)
+    smart_bar = Array(smart_barR)
+    @test size(smart_bar) == (length(k_support), length(z_fine_arr))
+    @test all(isfinite, smart_bar)
 
     # Fast path Boundary error checks
     z_coarse_short = Reactant.to_rarray(collect(range(0.0, 3.0, length=4)))

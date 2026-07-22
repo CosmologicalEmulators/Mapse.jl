@@ -363,12 +363,53 @@ x3 = Array(LinRange(-1., 1., 100))
     @test size(pk_nl_smart_kout) == size(pk_nl_fast_kout)
     @test pk_nl_smart_kout ≈ pk_nl_fast_kout rtol=1e-12
 
-    # Verify smart scalar z_fine output
+    # Test smart scalar z_fine output
     pk_nl_smart_scalar = Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse, 1.0, hmcode_k, pk_mm_coarse;
                                                pk_cb_coarse=pk_cb_coarse, nM=64, threaded=false)
     @test length(pk_nl_smart_scalar) == length(hmcode_k)
 
+    # Test smart baryonic API (Native Julia)
+    z_discont = Mapse.predict_baryonic_discontinuity(hmcode_cosmo; T_AGN=10^7.8)
+    @test 0.0 < z_discont < 3.5
+    smart_grid = Mapse.build_smart_coarse_grid(0.0, 3.5, 20, z_discont)
+    @test length(smart_grid) == 20
+    @test z_discont ∈ smart_grid
+
+    pk_smart_vec = Mapse.hmcode_pmm_baryonic_smart(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine; N_coarse=20, T_AGN=10^7.8, nM=64, threaded=false)
+    @test size(pk_smart_vec) == (length(hmcode_k), length(hmcode_z_fine))
+    @test all(isfinite, pk_smart_vec)
+
+    # Two-spline baryonic interpolation: split at the feedback feature and
+    # compare against direct baryonic HMCode on the full target grid.
+    z_two_split = 0.5
+    smart_two_grid = unique(sort(vcat(collect(LinRange(minimum(hmcode_z), maximum(hmcode_z), 19)), z_two_split)))
+    pk_mm_smart = zeros(length(hmcode_k), length(smart_two_grid))
+    pk_cb_smart = zeros(length(hmcode_k), length(smart_two_grid))
+    for ik in 1:length(hmcode_k)
+        itp_mm = AkimaInterpolation(view(hmcode_pk_mm, ik, :), hmcode_z)
+        itp_cb = AkimaInterpolation(view(hmcode_pk_cb, ik, :), hmcode_z)
+        for iz in eachindex(smart_two_grid)
+            pk_mm_smart[ik, iz] = itp_mm(smart_two_grid[iz])
+            pk_cb_smart[ik, iz] = itp_cb(smart_two_grid[iz])
+        end
+    end
+    pk_two_spline = Mapse.hmcode_pmm_fast_two_splines(
+        hmcode_cosmo, smart_two_grid, hmcode_z_fine, hmcode_k, pk_mm_smart;
+        pk_cb_coarse=pk_cb_smart, z_split=z_two_split,
+        T_AGN=10^7.8, nM=64, threaded=false)
+    pk_direct_baryonic = Mapse.hmcode_Pmm(
+        hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine;
+        pk_cb_z=pk_cb_fine, T_AGN=10^7.8, nM=64, threaded=false)
+    @test size(pk_two_spline) == size(pk_direct_baryonic)
+    @test all(isfinite, pk_two_spline)
+    @test maximum(abs.(pk_two_spline ./ pk_direct_baryonic .- 1.0)) < 2e-2
+
+    pk_smart_scalar = Mapse.hmcode_pmm_baryonic_smart(hmcode_cosmo, 1.0, hmcode_k, pk_mm_fine; N_coarse=20, T_AGN=10^7.8, nM=64, threaded=false)
+    @test length(pk_smart_scalar) == length(hmcode_k)
+    @test all(isfinite, pk_smart_scalar)
+
     # Grid and parameter validation checks for fast APIs
+
     @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, hmcode_z_fine, hmcode_k, pk_mm_fine, 4; pk_cb_z=pk_cb_fine)
     @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, reverse(hmcode_z_fine), hmcode_k, pk_mm_fine, 20; pk_cb_z=pk_cb_fine)
     @test_throws ArgumentError Mapse.hmcode_pmm_fast(hmcode_cosmo, z_coarse[1:4], hmcode_z_fine, hmcode_k, pk_mm_coarse[:, 1:4]; pk_cb_coarse=pk_cb_coarse[:, 1:4])

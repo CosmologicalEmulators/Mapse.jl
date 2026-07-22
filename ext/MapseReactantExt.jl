@@ -2,6 +2,27 @@ module MapseReactantExt
 
 using Mapse
 using Reactant
+import AbstractCosmologicalEmulators
+
+function Mapse.AbstractCosmologicalEmulators.to_reactant(emu::Mapse.TransferFunctionEmulator)
+    compression = if emu.Compression isa Mapse.PCACompression
+        Mapse.PCACompression(
+            mean=Reactant.to_rarray(emu.Compression.mean),
+            basis=Reactant.to_rarray(emu.Compression.basis),
+        )
+    else
+        emu.Compression
+    end
+    return Mapse.TransferFunctionEmulator(
+        TrainedEmulator=Mapse.AbstractCosmologicalEmulators.to_reactant(emu.TrainedEmulator),
+        kgrid=Reactant.to_rarray(emu.kgrid),
+        InMinMax=Reactant.to_rarray(emu.InMinMax),
+        OutMinMax=Reactant.to_rarray(emu.OutMinMax),
+        Preprocessing=emu.Preprocessing,
+        Postprocessing=emu.Postprocessing,
+        Compression=compression,
+    )
+end
 
 import Mapse:
     HalofitCosmology,
@@ -12,11 +33,17 @@ import Mapse:
     _halofit_rnl,
     _halofit_Pmm_one_z_unchecked,
     _halofit_Pmm_unchecked,
+    _validate_halofit_inputs,
+    _validate_halofit_background,
     _hmcode_choose_cb,
     halofit_Pmm,
     hmcode_Pmm,
     hmcode_pmm_fast,
-    hmcode_boost
+    hmcode_pmm_fast_two_splines,
+    hmcode_boost,
+    predict_baryonic_discontinuity,
+    build_smart_coarse_grid,
+    hmcode_pmm_baryonic_smart
 
 const TracedVec = Reactant.TracedRArray{T,1} where {T}
 const TracedMat = Reactant.TracedRArray{T,2} where {T}
@@ -24,6 +51,37 @@ const ConcreteVec = Reactant.ConcretePJRTArray{T,1} where {T}
 const ConcreteMat = Reactant.ConcretePJRTArray{T,2} where {T}
 const ReactantVec = Union{TracedVec,ConcreteVec}
 const ReactantMat = Union{TracedMat,ConcreteMat}
+
+# Inputs are validated on the host before conversion to device arrays. These
+# methods prevent traced comparisons from entering the host-only validators.
+Mapse._validate_halofit_inputs(::ReactantVec, ::ReactantVec, ::ReactantMat) = nothing
+Mapse._validate_halofit_inputs(::ReactantVec, ::ReactantVec, ::AbstractMatrix) = nothing
+Mapse._validate_halofit_background(::ReactantVec, ::ReactantVec, ::ReactantVec) = nothing
+Mapse._validate_halofit_background(::ReactantVec, ::ReactantVec, ::AbstractVector) = nothing
+
+function Mapse.lcdm_transfer_function(params::ReactantVec, k::ReactantVec)
+    omega_b = sum(params[4:4])
+    omega_c = sum(params[5:5])
+    Mnu = sum(params[6:6])
+    log10_k = log10.(k)
+    omega_nu = Mnu / 93.14
+    delta_omega = omega_c + omega_nu - omega_b
+    omega_m = omega_b + omega_c + omega_nu
+    return exp.(0.4971733969600907 .+ (-24.849067935704547 .- log.((((((0.731102574104348 .^ log10_k) .+ delta_omega) ./ 0.17522861267519874) .^ log10_k) .+ ((63.65597287231169 .^ (log10_k .+ 0.0472474783701488)) .* ((0.9899093975978591 .^ (log10_k ./ (cos.(log10_k ./ ((1.1964213875807956 ^ -2.3661897652294015) ./ cos.(log10_k ./ -1.8173117588773222))) ./ 0.20037856443385513))) ./ (delta_omega ^ 0.7767030041348179)))) .+ (0.14823981687164764 * omega_m))))
+end
+
+function Mapse.postprocessing_lcdm_transfer_ratio(params::ReactantVec,
+                                                  output, D,
+                                                  emu::Mapse.TransferFunctionEmulator)
+    ln10As = sum(params[1:1])
+    ns = sum(params[2:2])
+    As = exp(ln10As) * 1e-10
+    k = Mapse.get_kgrid(emu)
+    P_prim = Mapse.primordial_Pk(As, ns, k)
+    transfer = Mapse.lcdm_transfer_function(params, k)
+    D2 = reshape(D .^ 2, 1, :)
+    return (output .* transfer .^ 2) .* D2 .* P_prim
+end
 
 # `HalofitCosmology` is scalar configuration for the compiled kernel. Treating
 # it as static avoids trying to manufacture tracers for a small immutable struct
@@ -50,8 +108,7 @@ Base.@nospecializeinfer function Reactant.make_tracer(
 )
     return prev
 end
-
-function _halofit_integrate(x::ReactantVec, y::ReactantVec)
+function _halofit_r_integrate(x::AbstractVector, y::AbstractVector)
     n = length(x)
     last_simpson = isodd(n) ? n : n - 1
 
@@ -86,7 +143,7 @@ function _halofit_integrate(x::ReactantVec, y::ReactantVec)
     return total
 end
 
-function _halofit_integrate_columns(x::ReactantVec, y::ReactantMat)
+function _halofit_integrate_columns(x::AbstractVector, y::AbstractMatrix)
     n = length(x)
     last_simpson = isodd(n) ? n : n - 1
 
@@ -121,8 +178,8 @@ function _halofit_integrate_columns(x::ReactantVec, y::ReactantMat)
     return total
 end
 
-function _halofit_σ2_derivs_columns(logk::ReactantVec, k::ReactantVec,
-    pk_lin_mm_z::ReactantMat, R_z)
+function _halofit_σ2_derivs_columns(logk::AbstractVector, k::AbstractVector,
+    pk_lin_mm_z::AbstractMatrix, R_z)
 
     k_col = reshape(k, :, 1)
     kR2 = (k_col .* R_z) .^ 2
@@ -144,8 +201,8 @@ function _halofit_σ2_derivs_columns(logk::ReactantVec, k::ReactantVec,
     return sig2, d1, d2
 end
 
-function _halofit_rnl_columns(logk::ReactantVec, k::ReactantVec,
-    pk_lin_mm_z::ReactantMat)
+function _halofit_rnl_columns(logk::AbstractVector, k::AbstractVector,
+    pk_lin_mm_z::AbstractMatrix)
 
     lR = sum(pk_lin_mm_z .* 0; dims=1)
     for _ in 1:_HALOFIT_NEWTON_STEPS
@@ -153,16 +210,16 @@ function _halofit_rnl_columns(logk::ReactantVec, k::ReactantVec,
         is_invalid = (sig2 .<= zero(eltype(sig2))) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf)) .| (d1 .== zero(eltype(d1))) .| (d1 .!= d1) .| (d1 .== eltype(d1)(Inf)) .| (d1 .== eltype(d1)(-Inf))
         step_raw = ifelse.(is_invalid, eltype(sig2)(NaN), log.(sig2) ./ d1)
         # Guard against a finite but tiny d1 producing an Inf step.
-        step = ifelse.(~isfinite.(step_raw), eltype(sig2)(NaN), step_raw)
+        step = ifelse.(.!isfinite.(step_raw), eltype(sig2)(NaN), step_raw)
         lR = lR .- step
     end
 
     return exp.(lR)
 end
 
-function _halofit_power_columns(cpar::HalofitCosmology, pk_lin_mm_z::ReactantMat,
-    k::ReactantVec, z::ReactantVec, rnl, neff, cur, Ωm_z::ReactantVec,
-    Ωv_z::ReactantVec)
+function _halofit_power_columns(cpar::HalofitCosmology, pk_lin_mm_z::AbstractMatrix,
+    k::AbstractVector, z::AbstractVector, rnl, neff, cur, Ωm_z::AbstractVector,
+    Ωv_z::AbstractVector)
 
     T = promote_type(eltype(k), eltype(pk_lin_mm_z), eltype(z), eltype(Ωm_z),
                      eltype(Ωv_z))
@@ -220,27 +277,27 @@ function _halofit_power_columns(cpar::HalofitCosmology, pk_lin_mm_z::ReactantMat
     return (pk_halo_dim .+ pk_quasi_dim) ./ (k_col .^ 3 .* anorm)
 end
 
-function _halofit_σ2_derivs(logk::ReactantVec, k::ReactantVec, pk_lin::ReactantVec, R)
+function _halofit_r_σ2_derivs(logk::AbstractVector, k::AbstractVector, pk_lin::AbstractVector, R)
     kR2 = (k .* R) .^ 2
     exp_term = exp.(-kR2)
     integrand_pre = (k .^ 3) .* pk_lin ./ (2π^2)
 
-    sig2 = _halofit_integrate(logk, integrand_pre .* exp_term)
-    dsig2dR = -2 * R * _halofit_integrate(logk, integrand_pre .* (k .^ 2) .* exp_term)
+    sig2 = _halofit_r_integrate(logk, integrand_pre .* exp_term)
+    dsig2dR = -2 * R * _halofit_r_integrate(logk, integrand_pre .* (k .^ 2) .* exp_term)
     is_sig_invalid = (sig2 .<= zero(eltype(sig2))) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf))
     d1 = ifelse(is_sig_invalid, eltype(sig2)(NaN), dsig2dR * R / sig2)
 
-    d2sig2dR2 = _halofit_integrate(logk,
+    d2sig2dR2 = _halofit_r_integrate(logk,
         integrand_pre .* (k .^ 2) .* exp_term .* (-2 .+ 4 .* kR2))
     d2 = ifelse(is_sig_invalid, eltype(sig2)(NaN), (R^2 / sig2) * d2sig2dR2 + d1 - d1^2)
 
     return sig2, d1, d2
 end
 
-function _halofit_rnl(logk::ReactantVec, k::ReactantVec, pk_lin::ReactantVec)
+function _halofit_r_rnl(logk::AbstractVector, k::AbstractVector, pk_lin::AbstractVector)
     lR = zero(eltype(logk))
     for _ in 1:_HALOFIT_NEWTON_STEPS
-        sig2, d1, _ = _halofit_σ2_derivs(logk, k, pk_lin, exp(lR))
+        sig2, d1, _ = _halofit_r_σ2_derivs(logk, k, pk_lin, exp(lR))
         is_invalid = (sig2 .<= zero(sig2)) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf)) .| (d1 .== zero(d1)) .| (d1 .!= d1) .| (d1 .== eltype(d1)(Inf)) .| (d1 .== eltype(d1)(-Inf))
         step_raw = ifelse(is_invalid, eltype(sig2)(NaN), log(sig2) / d1)
         # Guard against a finite but tiny d1 producing an Inf step.
@@ -250,9 +307,9 @@ function _halofit_rnl(logk::ReactantVec, k::ReactantVec, pk_lin::ReactantVec)
     return exp(lR)
 end
 
-function _halofit_Pmm_unchecked(cpar::HalofitCosmology, z::ReactantVec,
-    k::ReactantVec, pk_lin_mm_z::ReactantMat, Ωm_z::ReactantVec,
-    Ωv_z::ReactantVec)
+function _halofit_r_Pmm_unchecked(cpar::HalofitCosmology, z::AbstractVector,
+    k::AbstractVector, pk_lin_mm_z::AbstractMatrix, Ωm_z::AbstractVector,
+    Ωv_z::AbstractVector)
 
     logk = log.(k)
     rnl = _halofit_rnl_columns(logk, k, pk_lin_mm_z)
@@ -263,16 +320,25 @@ function _halofit_Pmm_unchecked(cpar::HalofitCosmology, z::ReactantVec,
 end
 
 function halofit_Pmm(cpar::HalofitCosmology, z::ReactantVec, k::ReactantVec,
-    pk_lin_mm_z::ReactantMat, Ωm_z::ReactantVec, Ωv_z::ReactantVec)
+    pk_lin_mm_z::AbstractMatrix, Ωm_z::ReactantVec, Ωv_z::ReactantVec)
 
-    return _halofit_Pmm_unchecked(cpar, z, k, pk_lin_mm_z, Ωm_z, Ωv_z)
+    return _halofit_r_Pmm_unchecked(cpar, z, k, pk_lin_mm_z, Ωm_z, Ωv_z)
 end
 
 function halofit_Pmm(cpar::HalofitCosmology, z::Number, k::ReactantVec,
     pk_lin_mm::ReactantVec, Ωm_z::Number, Ωv_z::Number)
 
-    return _halofit_Pmm_one_z_unchecked(cpar, z, k, pk_lin_mm, Ωm_z, Ωv_z)
+    pk_mat = reshape(pk_lin_mm, :, 1)
+    z_vec = k[1:1] .* 0 .+ Float64(z)
+    Ωm_vec = k[1:1] .* 0 .+ Float64(Ωm_z)
+    Ωv_vec = k[1:1] .* 0 .+ Float64(Ωv_z)
+    out_mat = halofit_Pmm(cpar, z_vec, k, pk_mat, Ωm_vec, Ωv_vec)
+    return vec(out_mat)
 end
+
+
+
+
 
 
 # -----------------------------------------------------------------------------
@@ -498,14 +564,16 @@ function _hmcode_derivative_columns(x_z, xs, fs_mz)
     starts_for_i = clamp.(collect(1:n) .- 1, 1, n - 2)
     out = reshape(x_z .* 0, 1, nz)
     @inbounds for s in 1:(n - 2)
-        x0, x1, x2 = xs[s], xs[s + 1], xs[s + 2]
-        f0 = reshape(fs_mz[s, :], 1, nz)
-        f1 = reshape(fs_mz[s + 1, :], 1, nz)
-        f2 = reshape(fs_mz[s + 2, :], 1, nz)
+        x0 = reshape(xs[s:s], 1, 1)
+        x1 = reshape(xs[(s + 1):(s + 1)], 1, 1)
+        x2 = reshape(xs[(s + 2):(s + 2)], 1, 1)
+        f0 = reshape(fs_mz[s:s, :], 1, nz)
+        f1 = reshape(fs_mz[(s + 1):(s + 1), :], 1, nz)
+        f2 = reshape(fs_mz[(s + 2):(s + 2), :], 1, nz)
         xv = reshape(x_z, 1, nz)
-        deriv = f0 .* (2.0 .* xv .- x1 .- x2) ./ ((x0 - x1) * (x0 - x2)) .+
-                f1 .* (2.0 .* xv .- x0 .- x2) ./ ((x1 - x0) * (x1 - x2)) .+
-                f2 .* (2.0 .* xv .- x0 .- x1) ./ ((x2 - x0) * (x2 - x1))
+        deriv = f0 .* (2.0 .* xv .- x1 .- x2) ./ ((x0 .- x1) .* (x0 .- x2)) .+
+                f1 .* (2.0 .* xv .- x0 .- x2) ./ ((x1 .- x0) .* (x1 .- x2)) .+
+                f2 .* (2.0 .* xv .- x0 .- x1) ./ ((x2 .- x0) .* (x2 .- x1))
         start_mask_i = reshape(starts_for_i .== s, n, 1)
         selected = sum(ifelse.(nearest .& start_mask_i, 1.0, 0.0); dims=1)
         out = out .+ ifelse.(selected .> 0.5, deriv, zero(deriv))
@@ -784,14 +852,15 @@ end
 function _hmcode_Pmm_reactant(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
                                k_support, pk_mm_support_kz::ReactantMat,
                                pk_cb_support_kz::ReactantMat; T_AGN=10.0^7.8,
-                               Mmin=1.0, Mmax=1.0e18, nM=128)
+                               Mmin=1.0, Mmax=1.0e18, nM=128,
+                               growth_cosmo=cosmo)
     nM >= 2 || throw(ArgumentError("HMCode nM must be at least 2."))
     M = exp.(collect(range(log(float(Mmin)), log(float(Mmax)), length=nM)))
     R = _hmcode_lagrangian_radius(M, cosmo.Omega_m)
     pk_mm_out = _hmcode_loglog_interp_columns(k_support, pk_mm_support_kz, k_out)
     sigma_mz = _hmcode_sigma_grid(k_support, pk_cb_support_kz, R)
-    a_grid, growth, agrowth = _hmcode_growth_tables_static(cosmo; lcdm=false)
-    _, growth_lcdm, _ = _hmcode_growth_tables_static(cosmo; lcdm=true)
+    a_grid, growth, agrowth = _hmcode_growth_tables_static(growth_cosmo; lcdm=false)
+    _, growth_lcdm, _ = _hmcode_growth_tables_static(growth_cosmo; lcdm=true)
     params = _hmcode_compute_params(z, a_grid, growth, agrowth, sigma_mz, R,
                                     k_support, pk_mm_support_kz, cosmo)
     nu_mz = reshape(params.delta_c, 1, :) ./ sigma_mz
@@ -826,7 +895,7 @@ end
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
                     pk_mm_z::ReactantMat; pk_cb_z=nothing, k_support=nothing,
                     pk_cb_support_z=nothing, T_AGN=10.0^7.8, Mmin=1.0,
-                    Mmax=1.0e18, nM=128, kwargs...)
+                    Mmax=1.0e18, nM=128, growth_cosmo=cosmo, kwargs...)
     # HMCode's BAO smoothing requires a log-uniform support grid. Native Julia
     # validates that host-side contract before execution. Reactant receives
     # dynamic device arrays here, so materializing them solely to validate grid
@@ -837,7 +906,7 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
     pkcb === nothing && (pkcb = pk_mm_z)
     return _hmcode_Pmm_reactant(cosmo, z, k, k_linear, pk_mm_z, pkcb;
                                 T_AGN=T_AGN, Mmin=Mmin, Mmax=Mmax,
-                                nM=nM)
+                                nM=nM, growth_cosmo=growth_cosmo)
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
@@ -980,6 +1049,114 @@ function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
     return z_fine isa Number ? vec(Pk_nl_fine) : Pk_nl_fine
 end
 
+function hmcode_pmm_fast_two_splines(cosmo::HMCodeCosmology,
+                                     z_coarse::ReactantVec,
+                                     z_fine::ReactantVec,
+                                     k::ReactantVec,
+                                     pk_mm_coarse::ReactantMat;
+                                     z_split,
+                                     split_index::Union{Nothing,Int}=nothing,
+                                     pk_cb_coarse=nothing,
+                                     k_support=nothing,
+                                     pk_cb_support_coarse=nothing,
+                                     kwargs...)
+    nleft = split_index === nothing ? throw(ArgumentError("split_index is required for compiled two-spline Reactant calls.")) : split_index
+    z_host = z_coarse isa Reactant.ConcretePJRTArray ? Array(z_coarse) : nothing
+    nleft >= 5 || throw(ArgumentError("The lower two-spline segment needs at least 5 nodes."))
+    nleft <= length(z_coarse) - 4 || throw(ArgumentError("The upper two-spline segment needs at least 5 nodes."))
+    if z_host !== nothing && z_split isa Real
+        isapprox(z_host[nleft], z_split; rtol=0, atol=10eps(Float64)) || throw(ArgumentError("z_split must be a node of z_coarse."))
+    end
+    pkcb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    pk_nl = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
+                       pk_cb_z=pkcb, k_support=k_support, kwargs...)
+    pk_t = copy(transpose(pk_nl))
+    left = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_t[1:nleft, :], z_coarse[1:nleft], z_fine)
+    right = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_t[nleft:end, :], z_coarse[nleft:end], z_fine)
+    mask = reshape(z_fine .<= z_split, :, 1)
+    return copy(transpose(ifelse.(mask, left, right)))
+end
+
+function _hmcode_pmm_baryonic_smart_device(
+    params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec,
+    logT_AGN::ReactantVec, pmm_emu::Mapse.TransferFunctionEmulator,
+    pcb_emu::Mapse.TransferFunctionEmulator, cosmo::HMCodeCosmology,
+    growth; N_coarse::Int=20, N_left::Int=12, nM::Int=32)
+    z_coarse = Mapse.build_baryonic_coarse_grid(
+        params, z_limits, logT_AGN, N_coarse, N_left)
+    pk_mm = Mapse.get_Pk(params, z_coarse, growth, pmm_emu)
+    pk_cb = Mapse.get_Pk(params, z_coarse, growth, pcb_emu)
+    h = sum(params[3:3]) / 100
+    # The official linear emulators return physical k [Mpc^-1] and P [Mpc^3].
+    # HMCode itself is written in h-units, like the JAX implementation:
+    # k_h = k_phys / h and P_h = P_phys * h^3. Convert back after the
+    # nonlinear calculation so the public smart API remains in physical units.
+    k_h = pmm_emu.kgrid ./ h
+    pk_mm_h = pk_mm .* h^3
+    pk_cb_h = pk_cb .* h^3
+    omega_b = sum(params[4:4]) / h^2
+    omega_nu = (sum(params[6:6]) / 93.14) / h^2
+    omega_m = omega_b + sum(params[5:5]) / h^2 + omega_nu
+    dynamic_cosmo = HMCodeCosmology(
+        omega_m, omega_b, h, sum(params[2:2]), cosmo.sigma_8,
+        sum(params[7:7]), sum(params[8:8]), omega_nu, cosmo.Omega_k)
+    dynamic_T_AGN = sum(10.0 .^ logT_AGN)
+    z_split = z_coarse[(N_left + 1):(N_left + 1)]
+    result_h = hmcode_pmm_fast_two_splines(
+        dynamic_cosmo, z_coarse, z_fine, k_h, pk_mm_h;
+        pk_cb_coarse=pk_cb_h, z_split=z_split, split_index=N_left + 1,
+        T_AGN=dynamic_T_AGN, growth_cosmo=cosmo, nM=nM)
+    return result_h ./ h^3
+end
+
+"""Fully traced emulator → moving grid → HMCode → two-spline pipeline.
+
+This overload uses unity for the emulator growth factor. The overload accepting
+`growth_emu` below evaluates the official background emulator instead.
+"""
+function hmcode_pmm_baryonic_smart(params::ReactantVec,
+                                   z_fine::ReactantVec,
+                                   z_limits::ReactantVec,
+                                   logT_AGN::ReactantVec,
+                                   pmm_emu::Mapse.TransferFunctionEmulator,
+                                   pcb_emu::Mapse.TransferFunctionEmulator,
+                                   cosmo::HMCodeCosmology;
+                                   N_coarse::Int=20, N_left::Int=12,
+                                   nM::Int=32)
+    z_coarse = Mapse.build_baryonic_coarse_grid(
+        params, z_limits, logT_AGN, N_coarse, N_left)
+    return _hmcode_pmm_baryonic_smart_device(
+        params, z_fine, z_limits, logT_AGN, pmm_emu, pcb_emu, cosmo,
+        one.(z_coarse); N_coarse=N_coarse, N_left=N_left, nM=nM)
+end
+
+"""Fully traced smart pipeline using an emulator-predicted D(z).
+
+`growth_emu` must be the official 9-input, 7-output generic background
+emulator. Its sixth output is D(z). The emulator is evaluated on the moving
+coarse grid and remains entirely inside the compiled Reactant graph.
+"""
+function hmcode_pmm_baryonic_smart(
+    params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec,
+    logT_AGN::ReactantVec, pmm_emu::Mapse.TransferFunctionEmulator,
+    pcb_emu::Mapse.TransferFunctionEmulator,
+    growth_emu::AbstractCosmologicalEmulators.GenericEmulator,
+    cosmo::HMCodeCosmology; N_coarse::Int=20, N_left::Int=12, nM::Int=32)
+    z_coarse = Mapse.build_baryonic_coarse_grid(
+        params, z_limits, logT_AGN, N_coarse, N_left)
+    n_z = length(z_coarse)
+    emulator_input = vcat(
+        reshape(z_coarse, 1, n_z),
+        repeat(reshape(params, :, 1), 1, n_z),
+    )
+    growth_output = AbstractCosmologicalEmulators.run_emulator(
+        emulator_input, growth_emu)
+    growth = vec(growth_output[6:6, :])
+    return _hmcode_pmm_baryonic_smart_device(
+        params, z_fine, z_limits, logT_AGN, pmm_emu, pcb_emu, cosmo,
+        growth; N_coarse=N_coarse, N_left=N_left, nM=nM)
+end
+
 function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
                          z_fine::Union{Number, ReactantVec}, k::ReactantVec,
                          pk_mm_coarse::ReactantMat, pk_cb_coarse::ReactantMat;
@@ -1010,5 +1187,54 @@ function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
                            pk_mm_support_coarse;
                            pk_cb_support_coarse=pk_cb_support_coarse, kwargs...)
 end
+
+function hmcode_pmm_baryonic_smart(cosmo::HMCodeCosmology, z_fine::ReactantVec,
+                                  k::ReactantVec, pk_mm_coarse::ReactantMat;
+                                  pk_cb_coarse=nothing, N_coarse::Int=50, T_AGN::Real=10^7.8, kwargs...)
+    z_host = z_fine isa Number ? Float64(z_fine) : Array(z_fine)
+    z_min = z_host isa Real ? Float64(z_host) : minimum(z_host)
+    z_max = z_host isa Real ? Float64(z_host) : maximum(z_host)
+    if z_min >= z_max || (z_host isa AbstractVector && length(z_host) <= N_coarse)
+        if z_fine isa Number
+            pk_mm_vec = size(pk_mm_coarse, 2) == 1 ? vec(pk_mm_coarse) : vec(pk_mm_coarse[:, 1])
+            pk_cb_vec = isnothing(pk_cb_coarse) ? nothing : (size(pk_cb_coarse, 2) == 1 ? vec(pk_cb_coarse) : vec(pk_cb_coarse[:, 1]))
+            return hmcode_Pmm(cosmo, z_fine, k, pk_mm_vec; pk_cb=pk_cb_vec, T_AGN=T_AGN, kwargs...)
+        else
+            return hmcode_Pmm(cosmo, z_fine, k, pk_mm_coarse; pk_cb_z=pk_cb_coarse, T_AGN=T_AGN, kwargs...)
+        end
+    end
+
+    z_feature = predict_baryonic_discontinuity(cosmo; T_AGN=T_AGN)
+    z_coarse = build_smart_coarse_grid(z_min, z_max, N_coarse, z_feature)
+
+    pk_mm_coarse_eval = if size(pk_mm_coarse, 2) == length(z_host) && length(z_host) != length(z_coarse)
+        pk_mm_t = copy(transpose(Array(pk_mm_coarse)))
+        pk_mm_coarse_t = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_mm_t, z_host, z_coarse)
+        Reactant.to_rarray(copy(transpose(pk_mm_coarse_t)))
+    else
+        pk_mm_coarse
+    end
+
+    pk_cb_coarse_eval = if !isnothing(pk_cb_coarse) && size(pk_cb_coarse, 2) == length(z_host) && length(z_host) != length(z_coarse)
+        pk_cb_t = copy(transpose(Array(pk_cb_coarse)))
+        pk_cb_coarse_t = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_cb_t, z_host, z_coarse)
+        Reactant.to_rarray(copy(transpose(pk_cb_coarse_t)))
+    else
+        pk_cb_coarse
+    end
+
+    z_coarse_r = Reactant.to_rarray(Float64.(z_coarse))
+    nleft = searchsortedlast(z_coarse, z_feature)
+    if nleft >= 5 && nleft <= length(z_coarse) - 4
+        return hmcode_pmm_fast_two_splines(cosmo, z_coarse_r, z_fine, k, pk_mm_coarse_eval;
+                                           pk_cb_coarse=pk_cb_coarse_eval,
+                                           z_split=z_feature, split_index=nleft,
+                                           T_AGN=T_AGN, kwargs...)
+    end
+    return hmcode_pmm_fast(cosmo, z_coarse_r, z_fine, k, pk_mm_coarse_eval;
+                           pk_cb_coarse=pk_cb_coarse_eval, T_AGN=T_AGN, kwargs...)
+end
+
+
 
 end # module MapseReactantExt

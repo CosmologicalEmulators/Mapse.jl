@@ -461,6 +461,37 @@ function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector,
     return z_fine isa Number ? vec(Pk_nl_fine) : Pk_nl_fine
 end
 
+"""Evaluate HMCode on a coarse grid and interpolate Pmm with two Akima splines.
+
+The coarse grid must contain `z_split`. One spline is fitted on the nodes below
+the split and one on the nodes above it. This is intended for the baryonic
+feedback feature, where a single spline can smooth across the transition.
+"""
+function hmcode_pmm_fast_two_splines(cosmo::HMCodeCosmology,
+                                     z_coarse::AbstractVector,
+                                     z_fine::AbstractVector,
+                                     k::AbstractVector,
+                                     pk_mm_coarse::AbstractMatrix;
+                                     z_split::Real,
+                                     pk_cb_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                                     k_support::Union{Nothing,AbstractVector}=nothing,
+                                     pk_cb_support_coarse::Union{Nothing,AbstractMatrix}=nothing,
+                                     kwargs...)
+    validate_hmcode_fast_grids(z_coarse, z_fine)
+    nleft = searchsortedlast(z_coarse, z_split)
+    nleft >= 5 || throw(ArgumentError("The lower two-spline segment needs at least 5 nodes."))
+    nleft <= length(z_coarse) - 4 || throw(ArgumentError("The upper two-spline segment needs at least 5 nodes."))
+    isapprox(z_coarse[nleft], z_split; rtol=0, atol=10eps(Float64)) || throw(ArgumentError("z_split must be a node of z_coarse."))
+
+    pk_cb = _hmcode_choose_cb(pk_cb_coarse, pk_cb_support_coarse)
+    pk_nl = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
+                       pk_cb_z=pk_cb, k_support=k_support, kwargs...)
+    pk_t = copy(transpose(pk_nl))
+    left = AbstractCosmologicalEmulators.akima_interpolation(pk_t[1:nleft, :], z_coarse[1:nleft], z_fine)
+    right = AbstractCosmologicalEmulators.akima_interpolation(pk_t[nleft:end, :], z_coarse[nleft:end], z_fine)
+    return copy(transpose(ifelse.(reshape(z_fine .<= z_split, :, 1), left, right)))
+end
+
 function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector,
                          z_fine::Union{Number, AbstractVector}, k::AbstractVector,
                          pk_mm_coarse::AbstractMatrix, pk_cb_coarse::AbstractMatrix;
@@ -639,3 +670,203 @@ function hmcode_boost_fast(cosmo::HMCodeCosmology, z_coarse::AbstractVector{<:Re
 end
 
 
+"""
+    predict_baryonic_discontinuity(cosmo::HMCodeCosmology; T_AGN::Real=10^7.8)
+    predict_baryonic_discontinuity(params::AbstractVector; T_AGN::Real=10^7.8)
+
+Predict the baryonic feedback threshold/feature redshift z_discontinuity.
+"""
+function predict_baryonic_discontinuity(cosmo::HMCodeCosmology; T_AGN::Real=10^7.8)
+    logT_AGN = log10(Float64(T_AGN))
+    sbar = -0.0030 * (logT_AGN - 7.8) + 0.0201
+    sbarz = 0.0224 * (logT_AGN - 7.8) + 0.409
+    om_b = cosmo.Omega_b
+    om_m = cosmo.Omega_m
+    return (log10(om_b / om_m) - log10(sbar)) / sbarz
+end
+
+function predict_baryonic_discontinuity(params::AbstractVector; T_AGN::Real=10^7.8)
+    H0 = params[3]
+    h = H0 > 10.0 ? H0 / 100.0 : H0
+    ombh2 = params[4]
+    omch2 = params[5]
+    Mnu = params[6]
+    om_b = ombh2 / h^2
+    om_c = omch2 / h^2
+    om_nu = (Mnu / 93.14) / h^2
+    om_m = om_b + om_c + om_nu
+    logT_AGN = log10(Float64(T_AGN))
+    sbar = -0.0030 * (logT_AGN - 7.8) + 0.0201
+    sbarz = 0.0224 * (logT_AGN - 7.8) + 0.409
+    return (log10(om_b / om_m) - log10(sbar)) / sbarz
+end
+
+"""
+    build_smart_coarse_grid(z_min::Real, z_max::Real, N_coarse::Int, z_feature::Union{Nothing, Real}=nothing; min_spacing::Real=1e-4)
+
+Construct a coarse redshift grid of length N_coarse, placing N_coarse - 1 uniform nodes and inserting z_feature if within (z_min, z_max).
+"""
+function build_smart_coarse_grid(z_min::Real, z_max::Real, N_coarse::Int, z_feature::Union{Nothing, Real}=nothing; min_spacing::Real=1e-4)
+    N_coarse >= 5 || throw(ArgumentError("N_coarse must be at least 5 for Akima interpolation."))
+    zmin = Float64(z_min)
+    zmax = Float64(z_max)
+    if zmin >= zmax
+        return [zmin]
+    end
+
+    if !isnothing(z_feature) && (zmin + min_spacing) < z_feature < (zmax - min_spacing)
+        grid_base = collect(LinRange(zmin, zmax, N_coarse - 1))
+        dists = abs.(grid_base .- z_feature)
+        if minimum(dists) < min_spacing
+            return collect(LinRange(zmin, zmax, N_coarse))
+        end
+        smart_grid = sort(vcat(grid_base, Float64(z_feature)))
+        return smart_grid
+    else
+        return collect(LinRange(zmin, zmax, N_coarse))
+    end
+end
+
+"""
+    build_piecewise_coarse_grid(bounds, N_coarse, N_left)
+
+Construct a fixed-shape coarse grid around a moving feature without sorting or
+host-side control flow. `bounds` is the three-element vector
+`[z_min, z_max, z_feature]`. The output contains `N_left` nodes below the
+feature, the feature itself, and the remaining nodes above it.
+
+`N_coarse` and `N_left` determine array shapes and must remain static across a
+compiled call. The values in `bounds` may be traced and can therefore change at
+every MCMC step.
+"""
+function build_piecewise_coarse_grid(bounds::AbstractVector,
+                                     N_coarse::Int, N_left::Int)
+    N_left >= 4 || throw(ArgumentError("N_left must be at least 4 for Akima interpolation."))
+    N_right = N_coarse - N_left - 1
+    N_right >= 4 || throw(ArgumentError("N_right must be at least 4 for Akima interpolation."))
+
+    # Keep bounds as one-element arrays. This avoids scalar indexing when
+    # `bounds` is a Reactant traced array.
+    z_min = bounds[1:1]
+    z_max = bounds[2:2]
+    z_feature = bounds[3:3]
+
+    T = eltype(bounds)
+    left_fraction = T.(collect(0:(N_left - 1))) ./ T(N_left)
+    right_fraction = T.(collect(1:N_right)) ./ T(N_right)
+    left = z_min .+ left_fraction .* (z_feature .- z_min)
+    right = z_feature .+ right_fraction .* (z_max .- z_feature)
+    return vcat(left, z_feature, right)
+end
+
+"""
+    build_baryonic_coarse_grid(params, z_limits, logT_AGN, N_coarse, N_left)
+
+Compute the HMCode baryonic feature redshift and its piecewise coarse grid using
+array operations only. `params` follows the package convention
+`[ln10As, ns, H0, ωb, ωc, Mν, w0, wa]`; `z_limits` is `[z_min, z_max]`; and
+`logT_AGN` is a one-element array. All three inputs may be traced device arrays.
+"""
+function build_baryonic_coarse_grid(params::AbstractVector,
+                                    z_limits::AbstractVector,
+                                    logT_AGN::AbstractVector,
+                                    N_coarse::Int, N_left::Int)
+    H0 = params[3:3]
+    h = ifelse.(H0 .> 10, H0 ./ 100, H0)
+    omega_b = params[4:4] ./ h.^2
+    omega_c = params[5:5] ./ h.^2
+    omega_nu = (params[6:6] ./ 93.14) ./ h.^2
+    omega_m = omega_b .+ omega_c .+ omega_nu
+    sbar = -0.0030 .* (logT_AGN .- 7.8) .+ 0.0201
+    sbarz = 0.0224 .* (logT_AGN .- 7.8) .+ 0.409
+    z_feature = (log10.(omega_b ./ omega_m) .- log10.(sbar)) ./ sbarz
+    bounds = vcat(z_limits[1:1], z_limits[2:2], z_feature)
+    return build_piecewise_coarse_grid(bounds, N_coarse, N_left)
+end
+
+"""
+    hmcode_pmm_baryonic_smart(cosmo, z_fine, k, pk_mm_coarse; [pk_cb_coarse, N_coarse=50, T_AGN=10^7.8, kwargs...])
+
+Baryonic-only HMCode fast solver using an automated smart coarse grid.
+"""
+function hmcode_pmm_baryonic_smart(cosmo::HMCodeCosmology, z_fine::Union{Real, AbstractVector},
+                                  k::AbstractVector, pk_mm_coarse::AbstractMatrix;
+                                  pk_cb_coarse::Union{Nothing, AbstractMatrix}=nothing,
+                                  N_coarse::Int=50, T_AGN::Real=10^7.8, kwargs...)
+    z_min = z_fine isa Real ? Float64(z_fine) : minimum(z_fine)
+    z_max = z_fine isa Real ? Float64(z_fine) : maximum(z_fine)
+    if z_min >= z_max || (z_fine isa AbstractVector && length(z_fine) <= N_coarse)
+        if z_fine isa Real
+            pk_mm_vec = size(pk_mm_coarse, 2) == 1 ? vec(pk_mm_coarse) : vec(pk_mm_coarse[:, 1])
+            pk_cb_vec = isnothing(pk_cb_coarse) ? nothing : (size(pk_cb_coarse, 2) == 1 ? vec(pk_cb_coarse) : vec(pk_cb_coarse[:, 1]))
+            return hmcode_Pmm(cosmo, Float64(z_fine), k, pk_mm_vec; pk_cb=pk_cb_vec, T_AGN=T_AGN, kwargs...)
+        else
+            return hmcode_Pmm(cosmo, z_fine, k, pk_mm_coarse; pk_cb_z=pk_cb_coarse, T_AGN=T_AGN, kwargs...)
+        end
+    end
+
+    z_feature = predict_baryonic_discontinuity(cosmo; T_AGN=T_AGN)
+    z_coarse = build_smart_coarse_grid(z_min, z_max, N_coarse, z_feature)
+
+    pk_mm_coarse_eval = if size(pk_mm_coarse, 2) == length(z_fine) && length(z_fine) != length(z_coarse)
+        pk_mm_t = copy(transpose(pk_mm_coarse))
+        pk_mm_coarse_t = AbstractCosmologicalEmulators.akima_interpolation(pk_mm_t, z_fine, z_coarse)
+        copy(transpose(pk_mm_coarse_t))
+    else
+        pk_mm_coarse
+    end
+
+    pk_cb_coarse_eval = if !isnothing(pk_cb_coarse) && size(pk_cb_coarse, 2) == length(z_fine) && length(z_fine) != length(z_coarse)
+        pk_cb_t = copy(transpose(pk_cb_coarse))
+        pk_cb_coarse_t = AbstractCosmologicalEmulators.akima_interpolation(pk_cb_t, z_fine, z_coarse)
+        copy(transpose(pk_cb_coarse_t))
+    else
+        pk_cb_coarse
+    end
+
+    nleft = searchsortedlast(z_coarse, z_feature)
+    if nleft >= 5 && nleft <= length(z_coarse) - 4
+        return hmcode_pmm_fast_two_splines(cosmo, z_coarse, z_fine, k, pk_mm_coarse_eval;
+                                           pk_cb_coarse=pk_cb_coarse_eval,
+                                           z_split=z_feature, T_AGN=T_AGN, kwargs...)
+    end
+    # The requested interval is too short on one side of the feature for two
+    # Akima segments. Preserve the existing API by falling back to one spline.
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse_eval;
+                           pk_cb_coarse=pk_cb_coarse_eval, T_AGN=T_AGN, kwargs...)
+end
+
+"""Evaluate HMCode using physical-unit inputs and return physical P(k,z).
+
+The public unit contract is `k` in Mpc⁻¹ and spectra in Mpc³. The internal
+HMCode implementation continues to use h-units.
+"""
+function hmcode_pmm_physical(cosmo::HMCodeCosmology, z::AbstractVector,
+                             k::AbstractVector, pk_mm_z::AbstractMatrix;
+                             pk_cb_z=nothing, k_support=nothing,
+                             pk_cb_support_z=nothing, kwargs...)
+    h = cosmo.h
+    k_phys_support = k_support === nothing ? k : k_support
+    pk_cb = pk_cb_support_z === nothing ? pk_cb_z : pk_cb_support_z
+    pk_cb === nothing && (pk_cb = pk_mm_z)
+    return hmcode_Pmm(cosmo, z, k ./ h, pk_mm_z .* h^3;
+                      pk_cb_z=pk_cb .* h^3,
+                      k_support=k_phys_support ./ h, kwargs...) ./ h^3
+end
+
+function hmcode_pmm_fast_physical(cosmo::HMCodeCosmology,
+                                  z_coarse::AbstractVector,
+                                  z_fine::AbstractVector,
+                                  k::AbstractVector,
+                                  pk_mm_coarse::AbstractMatrix;
+                                  pk_cb_coarse=nothing, k_support=nothing,
+                                  pk_cb_support_coarse=nothing, kwargs...)
+    h = cosmo.h
+    k_phys_support = k_support === nothing ? k : k_support
+    pk_cb = pk_cb_support_coarse === nothing ? pk_cb_coarse : pk_cb_support_coarse
+    pk_cb === nothing && (pk_cb = pk_mm_coarse)
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k ./ h,
+                           pk_mm_coarse .* h^3;
+                           pk_cb_coarse=pk_cb .* h^3,
+                           k_support=k_phys_support ./ h, kwargs...) ./ h^3
+end
