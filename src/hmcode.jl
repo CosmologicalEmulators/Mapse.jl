@@ -746,7 +746,6 @@ function build_piecewise_coarse_grid(bounds::AbstractVector,
     N_right >= 4 || throw(ArgumentError("N_right must be at least 4 for Akima interpolation."))
 
     # Keep bounds as one-element arrays. This avoids scalar indexing when
-    # `bounds` is a Reactant traced array.
     z_min = bounds[1:1]
     z_max = bounds[2:2]
     z_feature = bounds[3:3]
@@ -780,7 +779,7 @@ function build_baryonic_coarse_grid(params::AbstractVector,
     sbar = -0.0030 .* (logT_AGN .- 7.8) .+ 0.0201
     sbarz = 0.0224 .* (logT_AGN .- 7.8) .+ 0.409
     z_feature = (log10.(omega_b ./ omega_m) .- log10.(sbar)) ./ sbarz
-    bounds = vcat(z_limits[1:1], z_feature, z_limits[2:2])
+    bounds = vcat(z_limits[1:1], z_limits[2:2], z_feature)
     return build_piecewise_coarse_grid(bounds, N_coarse, N_left)
 end
 
