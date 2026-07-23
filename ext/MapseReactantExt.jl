@@ -42,9 +42,11 @@ import Mapse:
     hmcode_pmm_fast_two_splines,
     hmcode_boost,
     predict_baryonic_discontinuity,
+    predict_baryonic_discontinuity,
     build_smart_coarse_grid,
     build_piecewise_coarse_grid,
-    hmcode_pmm_baryonic_smart
+    hmcode_pmm_baryonic_smart,
+    hmcode_pmm_dmo_smart
 
 const TracedVec = Reactant.TracedRArray{T,1} where {T}
 const TracedMat = Reactant.TracedRArray{T,2} where {T}
@@ -849,6 +851,8 @@ function _hmcode_assemble_pass(k, z, cosmo::HMCodeCosmology, M, R,
     return pk_lin_kz .+ p1h
 end
 
+Mapse.AbstractCosmologicalEmulators.to_reactant(c::HMCodeCosmology) = c
+
 function _hmcode_Pmm_reactant(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
                                k_support, pk_mm_support_kz::ReactantMat,
                                pk_cb_support_kz::ReactantMat; T_AGN=10.0^7.8,
@@ -893,9 +897,11 @@ function _hmcode_Pmm_reactant(cosmo::HMCodeCosmology, z::ReactantVec, k_out::Rea
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
-                    pk_mm_z::ReactantMat; pk_cb_z=nothing, k_support=nothing,
-                    pk_cb_support_z=nothing, T_AGN=10.0^7.8, Mmin=1.0,
-                    Mmax=1.0e18, nM=128, growth_cosmo=cosmo, kwargs...)
+                    pk_mm_z::ReactantMat; pk_cb_z::Union{Nothing,ReactantMat}=nothing,
+                    k_support::Union{Nothing,AbstractVector}=nothing,
+                    pk_cb_support_z::Union{Nothing,ReactantMat}=nothing,
+                    T_AGN=10.0^7.8, Mmin=1.0, Mmax=1.0e18, nM=128,
+                    growth_cosmo=cosmo, kwargs...)
     # HMCode's BAO smoothing requires a log-uniform support grid. Native Julia
     # validates that host-side contract before execution. Reactant receives
     # dynamic device arrays here, so materializing them solely to validate grid
@@ -915,15 +921,16 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
-                    k_support::ReactantVec, pk_mm_support_z::ReactantMat;
-                    pk_cb_support_z=nothing, pk_cb_z=nothing, kwargs...)
+                    k_support::AbstractVector, pk_mm_support_z::ReactantMat;
+                    pk_cb_support_z::Union{Nothing,ReactantMat}=nothing,
+                    pk_cb_z=nothing, kwargs...)
     pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     return hmcode_Pmm(cosmo, z, k_out, pk_mm_support_z;
                       k_support=k_support, pk_cb_z=pkcb, kwargs...)
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
-                    k_support::ReactantVec, pk_mm_support_z::ReactantMat,
+                    k_support::AbstractVector, pk_mm_support_z::ReactantMat,
                     pk_cb_support_z::ReactantMat; pk_cb_z=nothing, kwargs...)
     pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     return hmcode_Pmm(cosmo, z, k_out, pk_mm_support_z;
@@ -931,8 +938,9 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
-                    pk_mm::ReactantVec; pk_cb=nothing, k_support=nothing,
-                    pk_cb_support=nothing, kwargs...)
+                    pk::ReactantMat;
+                    k_support::Union{Nothing,AbstractVector}=nothing,
+                    pk_cb_z::Union{Nothing,ReactantMat}=nothing, kwargs...)
     k_linear = k_support === nothing ? k : k_support
     zvec = k_linear[1:1] .* 0 .+ float(z)
     pk = reshape(pk_mm, length(k_linear), 1)
@@ -949,8 +957,8 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number,
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k_out::ReactantVec,
-                    k_support::ReactantVec, pk_mm_support::ReactantVec,
-                    pk_cb_support::ReactantVec; kwargs...)
+                    k_support::AbstractVector, pk_mm_support::ReactantMat;
+                    pk_cb_support::ReactantVec, kwargs...)
     return hmcode_Pmm(cosmo, z, k_out, pk_mm_support;
                       k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)
 end
@@ -1032,7 +1040,7 @@ support `hmcode_boost_fast` on traced arrays. For nonlinear boosts, users should
 function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
                          z_fine::Union{Number, ReactantVec}, k::ReactantVec,
                          pk_mm_coarse::ReactantMat;
-                         pk_cb_coarse=nothing, k_support=nothing,
+                         pk_cb_coarse=nothing, k_support::Union{Nothing,AbstractVector}=nothing,
                          pk_cb_support_coarse=nothing, kwargs...)
     length(z_coarse) >= 5 || throw(ArgumentError("z_coarse must have at least 5 points for Akima interpolation."))
     if z_coarse isa Reactant.ConcretePJRTArray
@@ -1057,7 +1065,7 @@ function hmcode_pmm_fast_two_splines(cosmo::HMCodeCosmology,
                                      z_split,
                                      split_index::Union{Nothing,Int}=nothing,
                                      pk_cb_coarse=nothing,
-                                     k_support=nothing,
+                                     k_support::Union{Nothing,AbstractVector}=nothing,
                                      pk_cb_support_coarse=nothing,
                                      kwargs...)
     nleft = split_index === nothing ? throw(ArgumentError("split_index is required for compiled two-spline Reactant calls.")) : split_index
@@ -1079,7 +1087,7 @@ end
 
 function _hmcode_pmm_baryonic_smart_device(
     params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec,
-    logT_AGN::ReactantVec, pmm_emu::Mapse.TransferFunctionEmulator,
+    k_out::ReactantVec, logT_AGN::ReactantVec, pmm_emu::Mapse.TransferFunctionEmulator,
     pcb_emu::Mapse.TransferFunctionEmulator, cosmo::HMCodeCosmology,
     growth; N_coarse::Int=20, N_left::Int=12, nM::Int=32)
     z_coarse = Mapse.build_baryonic_coarse_grid(
@@ -1091,7 +1099,8 @@ function _hmcode_pmm_baryonic_smart_device(
     # HMCode itself is written in h-units, like the JAX implementation:
     # k_h = k_phys / h and P_h = P_phys * h^3. Convert back after the
     # nonlinear calculation so the public smart API remains in physical units.
-    k_h = pmm_emu.kgrid ./ h
+    k_h = k_out ./ h
+    k_support_h = pmm_emu.kgrid ./ h
     pk_mm_h = pk_mm .* h^3
     pk_cb_h = pk_cb .* h^3
     omega_b = sum(params[4:4]) / h^2
@@ -1104,8 +1113,40 @@ function _hmcode_pmm_baryonic_smart_device(
     z_split = z_coarse[(N_left + 1):(N_left + 1)]
     result_h = hmcode_pmm_fast_two_splines(
         dynamic_cosmo, z_coarse, z_fine, k_h, pk_mm_h;
-        pk_cb_coarse=pk_cb_h, z_split=z_split, split_index=N_left + 1,
+        pk_cb_coarse=pk_cb_h, k_support=k_support_h,
+        z_split=z_split, split_index=N_left + 1,
         T_AGN=dynamic_T_AGN, growth_cosmo=cosmo, nM=nM)
+    return result_h ./ h^3
+end
+
+function Mapse.hmcode_pmm_dmo_smart(params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec, k_out::ReactantVec,
+    pmm_emu::Mapse.TransferFunctionEmulator, pcb_emu::Mapse.TransferFunctionEmulator,
+    growth_emu, cosmo::HMCodeCosmology;
+    N_coarse::Int=32, N_left::Int=16, nM::Int=128)
+
+    z_min = z_limits[1:1]
+    z_max = z_limits[2:2]
+    fraction = eltype(z_limits).(collect(0:(N_coarse - 1))) ./ eltype(z_limits)(N_coarse - 1)
+    zc = z_min .+ fraction .* (z_max .- z_min)
+
+    zc_row = reshape(zc, 1, :)
+    params_mat = repeat(reshape(params, :, 1), 1, N_coarse)
+    growth_input = vcat(zc_row, params_mat)
+    growth_output = AbstractCosmologicalEmulators.run_emulator(growth_input, growth_emu)
+    growth_coarse = vec(growth_output[6:6, :])
+    
+    pmm_coarse = Mapse.get_Pk(params, zc, growth_coarse, pmm_emu)
+    pcb_coarse = Mapse.get_Pk(params, zc, growth_coarse, pcb_emu)
+    
+    h = cosmo.h
+    
+    k_support = Mapse.get_kgrid(pmm_emu)
+    result_h = Mapse.hmcode_pmm_fast(cosmo, zc, z_fine, k_out ./ h, pmm_coarse .* h^3;
+        pk_cb_coarse = pcb_coarse .* h^3,
+        k_support = k_support ./ h,
+        T_AGN = nothing,
+        nM = nM)
+        
     return result_h ./ h^3
 end
 
@@ -1126,7 +1167,7 @@ function hmcode_pmm_baryonic_smart(params::ReactantVec,
     z_coarse = Mapse.build_baryonic_coarse_grid(
         params, z_limits, logT_AGN, N_coarse, N_left)
     return _hmcode_pmm_baryonic_smart_device(
-        params, z_fine, z_limits, logT_AGN, pmm_emu, pcb_emu, cosmo,
+        params, z_fine, z_limits, pmm_emu.kgrid, logT_AGN, pmm_emu, pcb_emu, cosmo,
         one.(z_coarse); N_coarse=N_coarse, N_left=N_left, nM=nM)
 end
 
@@ -1147,13 +1188,40 @@ function hmcode_pmm_baryonic_smart(
     n_z = length(z_coarse)
     emulator_input = vcat(
         reshape(z_coarse, 1, n_z),
-        repeat(reshape(params, :, 1), 1, n_z),
+        reshape(params, :, 1) .* ones(eltype(z_coarse), 1, n_z),
     )
     growth_output = AbstractCosmologicalEmulators.run_emulator(
         emulator_input, growth_emu)
     growth = vec(growth_output[6:6, :])
     return _hmcode_pmm_baryonic_smart_device(
-        params, z_fine, z_limits, logT_AGN, pmm_emu, pcb_emu, cosmo,
+        params, z_fine, z_limits, pmm_emu.kgrid, logT_AGN, pmm_emu, pcb_emu, cosmo,
+        growth; N_coarse=N_coarse, N_left=N_left, nM=nM)
+end
+
+"""Full traced pipeline with an explicit physical output k-grid.
+
+The emulator spectra remain on the emulator support grid; `k_out` controls
+the final HMCode output grid. Both are physical Mpc⁻¹ at this API boundary.
+"""
+function hmcode_pmm_baryonic_smart(
+    params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec,
+    k_out::ReactantVec, logT_AGN::ReactantVec,
+    pmm_emu::Mapse.TransferFunctionEmulator,
+    pcb_emu::Mapse.TransferFunctionEmulator,
+    growth_emu::AbstractCosmologicalEmulators.GenericEmulator,
+    cosmo::HMCodeCosmology; N_coarse::Int=20, N_left::Int=12, nM::Int=32)
+    z_coarse = Mapse.build_baryonic_coarse_grid(
+        params, z_limits, logT_AGN, N_coarse, N_left)
+    n_z = length(z_coarse)
+    emulator_input = vcat(
+        reshape(z_coarse, 1, n_z),
+        reshape(params, :, 1) .* ones(eltype(z_coarse), 1, n_z),
+    )
+    growth_output = AbstractCosmologicalEmulators.run_emulator(
+        emulator_input, growth_emu)
+    growth = vec(growth_output[6:6, :])
+    return _hmcode_pmm_baryonic_smart_device(
+        params, z_fine, z_limits, k_out, logT_AGN, pmm_emu, pcb_emu, cosmo,
         growth; N_coarse=N_coarse, N_left=N_left, nM=nM)
 end
 

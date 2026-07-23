@@ -633,3 +633,4 @@ include("test_hmcode_reactant.jl")
     fast_response = fast_feedback ./ fast_dmo
     @test fast_response[mask_low_k, :] ≈ ones(count(mask_low_k), length(z_fine)) rtol=1e-3
 end
+include("test_hmcode_smart_camb.jl")

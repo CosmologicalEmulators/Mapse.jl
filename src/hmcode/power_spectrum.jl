@@ -63,6 +63,7 @@ mutable struct HMcodeWorkspace
     rv::Matrix{Float64}
     cc::Matrix{Float64}
     ln1pc::Matrix{Float64}
+    zf_mat::Matrix{Float64}
     Mb_vec::Vector{Float64}
     fstar_vec::Vector{Float64}
     W_buf::Vector{Matrix{Float64}}
@@ -167,7 +168,12 @@ function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nt
     w1h_mat = Matrix{Float64}(undef, nM, nz)
     compute_weights_inplace!(w1h_mat, M, nu_mat, amp_no, zeros(nM), zeros(nM))
     
-    return HMcodeWorkspace(M, R, collect(Float64.(k)), collect(Float64.(zs)), sigma_fast, Pk_fast, growth_itp, growth_LCDM_itp, growth_itp_inverse, params_tweaks, params_notweaks, Sigma, nu_mat, Pk_lin_mat, Pk_wig_mat, zeros(nk, nz), zeros(nk, nz), w1h_mat, zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zeros(nz), zeros(nz), [zeros(nM, nk) for _ in 1:nthreads], [zeros(nM, nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads])
+    zf_mat = zeros(nM, nz)
+    for iz in 1:nz
+        compute_collapse_redshifts_fast!(view(zf_mat, :, iz), M, zs[iz], params_tweaks.delta_c[iz], cosmo.Omega_m, growth_itp, growth_itp_inverse, SigmaREval(sigma_fast, zs[iz], iz))
+    end
+    
+    return HMcodeWorkspace(M, R, collect(Float64.(k)), collect(Float64.(zs)), sigma_fast, Pk_fast, growth_itp, growth_LCDM_itp, growth_itp_inverse, params_tweaks, params_notweaks, Sigma, nu_mat, Pk_lin_mat, Pk_wig_mat, zeros(nk, nz), zeros(nk, nz), w1h_mat, zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zf_mat, zeros(nz), zeros(nz), [zeros(nM, nk) for _ in 1:nthreads], [zeros(nM, nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads])
 end
 
 function compute_sigma_grid!(Sigma, R_grid, zs, sigma_R)
@@ -315,17 +321,10 @@ function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=tr
         z = zs[iz]; dc, Dv, B = hmpars.delta_c[iz], hmpars.Delta_v[iz], hmpars.B[iz]
         if (T_AGN !== nothing) && (!tweaks); B = feedback_params.B0 * 10.0^(z * feedback_params.Bz); end
         
-        # Only compute cc if we are in tweaks mode, or if it hasn't been computed?
-        # Actually, cc depends on B which changes if T_AGN !== nothing && !tweaks
-        # compute_collapse_redshifts_fast! is expensive. We only need to compute it once per cosmology if we cache it correctly.
-        # But wait, it doesn't depend on tweaks or T_AGN! It only depends on z, dc, Om_m, growth, etc.
-        # So we can skip it if it's already computed.
-        # For now, let's leave it as is to ensure correctness.
-        compute_collapse_redshifts_fast!(view(ws.cc, :, iz), ws.M, z, dc, Om_m, growth, ws.growth_itp_inverse, SigmaREval(ws.sigma_fast, z, iz))
         a_obs = scalefactor_from_redshift(z); dolag = (growth(ac)/growth_LCDM(ac)) * (growth_LCDM(a_obs)/growth(a_obs))
         rvs = cbrt(Dv)
         @inbounds @fastmath for iM in 1:nM
-            zfv = ws.cc[iM, iz]
+            zfv = ws.zf_mat[iM, iz]
             ws.rv[iM, iz] = ws.R[iM] / rvs
             cc_v = B * (1.0 + zfv)/(1.0 + z) * dolag
             ws.cc[iM, iz] = cc_v

@@ -131,7 +131,11 @@ end
 
 function get_Pk(input_params, z::AbstractVector, D::AbstractVector, emu::TransferFunctionEmulator)
     preprocessed_input = emu.Preprocessing(input_params)
-    input = vcat(reshape(z, 1, :), repeat(preprocessed_input, 1, length(z)))
+    # Broadcast the parameter columns instead of using `repeat`. The latter
+    # expands into a typed_vcat-heavy trace for Reactant when this function is
+    # called inside a compiled emulator → HMCode pipeline.
+    input = vcat(reshape(z, 1, :),
+                 reshape(preprocessed_input, :, 1) .* ones(eltype(z), 1, length(z)))
     norm_input = maximin(input, emu.InMinMax)
     output = run_emulator(norm_input, emu.TrainedEmulator)
     denorm_output = inv_maximin(output, emu.OutMinMax)

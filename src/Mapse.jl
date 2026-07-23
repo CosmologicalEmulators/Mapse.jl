@@ -55,6 +55,35 @@ export TransferFunctionEmulator, load_emulator,
     postprocessing_lcdm_transfer_ratio,
     HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm, halofit_pmm,
     HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_pmm_physical, hmcode_pmm_fast_physical, hmcode_boost, hmcode_pmm_fast, hmcode_pmm_fast_two_splines, hmcode_Pmm_fast, hmcode_boost_fast, validate_hmcode_fast_grids,
-    predict_baryonic_discontinuity, build_smart_coarse_grid, build_piecewise_coarse_grid, build_baryonic_coarse_grid, hmcode_pmm_baryonic_smart, hmcode_Pmm_baryonic_smart
+    predict_baryonic_discontinuity, build_smart_coarse_grid, build_piecewise_coarse_grid, build_baryonic_coarse_grid, hmcode_pmm_baryonic_smart, hmcode_Pmm_baryonic_smart, hmcode_pmm_dmo_smart
+
+function growth_at(z, params, growth_emu)
+    input = vcat(reshape(z, 1, :), repeat(reshape(params, :, 1), 1, length(z)))
+    return vec(AbstractCosmologicalEmulators.run_emulator(input, growth_emu)[6:6, :])
+end
+
+function hmcode_pmm_dmo_smart(params::AbstractVector, z_fine::AbstractVector, z_limits::AbstractVector, k_out::AbstractVector,
+    pmm_emu::TransferFunctionEmulator, pcb_emu::TransferFunctionEmulator, growth_emu,
+    cosmo::HMCodeCosmology; N_coarse::Int=32, N_left::Int=16, nM::Int=128)
+
+    zc = collect(range(z_limits[1], z_limits[2], length=N_coarse))
+    
+    growth_coarse = growth_at(zc, params, growth_emu)
+    pmm_coarse = get_Pk(params, zc, growth_coarse, pmm_emu)
+    pcb_coarse = get_Pk(params, zc, growth_coarse, pcb_emu)
+    
+    h = cosmo.h
+    k_h = k_out ./ h
+    
+    k_support = get_kgrid(pmm_emu)
+    @show size(pmm_coarse), length(k_h), length(k_support)
+    result_h = hmcode_pmm_fast(cosmo, zc, z_fine, k_h, pmm_coarse .* h^3;
+        pk_cb_coarse = pcb_coarse .* h^3,
+        k_support = k_support ./ h,
+        T_AGN = nothing,
+        nM = nM)
+        
+    return result_h ./ h^3
+end
 
 end # module

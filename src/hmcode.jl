@@ -780,7 +780,7 @@ function build_baryonic_coarse_grid(params::AbstractVector,
     sbar = -0.0030 .* (logT_AGN .- 7.8) .+ 0.0201
     sbarz = 0.0224 .* (logT_AGN .- 7.8) .+ 0.409
     z_feature = (log10.(omega_b ./ omega_m) .- log10.(sbar)) ./ sbarz
-    bounds = vcat(z_limits[1:1], z_limits[2:2], z_feature)
+    bounds = vcat(z_limits[1:1], z_feature, z_limits[2:2])
     return build_piecewise_coarse_grid(bounds, N_coarse, N_left)
 end
 
@@ -789,6 +789,18 @@ end
 
 Baryonic-only HMCode fast solver using an automated smart coarse grid.
 """
+function hmcode_pmm_dmo_smart(cosmo::HMCodeCosmology, z_fine::Union{Real, AbstractVector},
+    k::AbstractVector, pk_mm_coarse::AbstractMatrix;
+    pk_cb_coarse::Union{AbstractMatrix,Nothing}=nothing,
+    N_coarse::Int=50, kwargs...)
+
+    z_feature = predict_baryonic_discontinuity(cosmo; T_AGN=10^7.8)
+    z_coarse = build_smart_coarse_grid(first(z_fine), last(z_fine), N_coarse, z_feature)
+
+    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse;
+        pk_cb_coarse=pk_cb_coarse, T_AGN=nothing, kwargs...)
+end
+
 function hmcode_pmm_baryonic_smart(cosmo::HMCodeCosmology, z_fine::Union{Real, AbstractVector},
                                   k::AbstractVector, pk_mm_coarse::AbstractMatrix;
                                   pk_cb_coarse::Union{Nothing, AbstractMatrix}=nothing,
