@@ -867,14 +867,15 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k_out::ReactantVec,
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k::ReactantVec,
-                    pk::ReactantMat;
+                    pk_mm::ReactantVec;
+                    pk_cb::Union{Nothing,ReactantVec}=nothing,
                     k_support::Union{Nothing,AbstractVector}=nothing,
-                    pk_cb_z::Union{Nothing,ReactantMat}=nothing, kwargs...)
-    k_linear = k_support === nothing ? k : k_support
-    zvec = k_linear[1:1] .* 0 .+ float(z)
-    pk = reshape(pk_mm, length(k_linear), 1)
+                    pk_cb_support::Union{Nothing,ReactantVec}=nothing,
+                    kwargs...)
+    zvec = k[1:1] .* zero(eltype(k)) .+ float(z)
+    pk = pk_mm .* transpose(one.(zvec))
     pkcb = _hmcode_choose_cb(pk_cb, pk_cb_support)
-    pkcb_mat = pkcb === nothing ? nothing : reshape(pkcb, length(k_linear), 1)
+    pkcb_mat = pkcb === nothing ? nothing : pkcb .* transpose(one.(zvec))
     out = hmcode_Pmm(cosmo, zvec, k, pk; k_support=k_support, pk_cb_z=pkcb_mat, kwargs...)
     return vec(out)
 end
@@ -886,7 +887,7 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number,
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::Number, k_out::ReactantVec,
-                    k_support::AbstractVector, pk_mm_support::ReactantMat;
+                    k_support::AbstractVector, pk_mm_support::ReactantVec;
                     pk_cb_support::ReactantVec, kwargs...)
     return hmcode_Pmm(cosmo, z, k_out, pk_mm_support;
                       k_support=k_support, pk_cb_support=pk_cb_support, kwargs...)

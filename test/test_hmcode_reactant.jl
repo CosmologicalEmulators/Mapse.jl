@@ -108,6 +108,47 @@ using Mapse
                                       pk_cb_support_z=pk_cb, nM=32, threaded=false)
     @test pmm_irr ≈ native_pmm_irr rtol=3e-3
 
+    # Scalar-redshift direct HMCode must preserve the support-grid contract
+    # for both concrete and compiled Reactant arrays.
+    z_scalar = z[1]
+    pk_mm_scalar = vec(pk_mm)
+    pk_cb_scalar = vec(pk_cb)
+    pk_mm_scalarR = Reactant.to_rarray(pk_mm_scalar)
+    pk_cb_scalarR = Reactant.to_rarray(pk_cb_scalar)
+    native_scalar = Mapse.hmcode_Pmm(
+        cosmo, z_scalar, k_out, pk_mm_scalar;
+        k_support=k_support, pk_cb_support=pk_cb_scalar,
+        T_AGN=nothing, nM=32, threaded=false)
+    direct_scalarR = Mapse.hmcode_Pmm(
+        cosmo, z_scalar, k_outR, pk_mm_scalarR;
+        k_support=k_supportR, pk_cb_support=pk_cb_scalarR,
+        T_AGN=nothing, nM=32)
+    Reactant.synchronize(direct_scalarR)
+    @test Array(direct_scalarR) ≈ native_scalar rtol=3e-3
+    z_scalarR = Reactant.to_rarray([z_scalar])
+    scalar_kernel(c, z0, kout, ksup, pmm, pcb) = Mapse.hmcode_Pmm(
+        c, sum(z0[1:1]), kout, pmm;
+        k_support=ksup, pk_cb_support=pcb, T_AGN=nothing, nM=32)
+    compiled_scalar = Reactant.@compile sync=true scalar_kernel(
+        cosmo, z_scalarR, k_outR, k_supportR, pk_mm_scalarR, pk_cb_scalarR)
+    scalarR = compiled_scalar(
+        cosmo, z_scalarR, k_outR, k_supportR, pk_mm_scalarR, pk_cb_scalarR)
+    Reactant.synchronize(scalarR)
+    @test size(Array(scalarR)) == size(native_scalar)
+    @test all(isfinite, Array(scalarR))
+    @test Array(scalarR) ≈ native_scalar rtol=3e-3
+    z_scalar2 = z_scalar + 0.5
+    native_scalar2 = Mapse.hmcode_Pmm(
+        cosmo, z_scalar2, k_out, pk_mm_scalar;
+        k_support=k_support, pk_cb_support=pk_cb_scalar,
+        T_AGN=nothing, nM=32, threaded=false)
+    z_scalarR2 = Reactant.to_rarray([z_scalar2])
+    scalarR2 = compiled_scalar(
+        cosmo, z_scalarR2, k_outR, k_supportR, pk_mm_scalarR, pk_cb_scalarR)
+    Reactant.synchronize(scalarR2)
+    @test Array(scalarR2) ≈ native_scalar2 rtol=3e-3
+    @test Array(scalarR2) != Array(scalarR)
+
 
     boostR = Mapse.hmcode_boost(cosmo, zR, k_outR, k_supportR, pk_mmR, pk_cbR;
                                 nM=32)
