@@ -76,7 +76,6 @@ function hmcode_pmm_dmo_smart(params::AbstractVector, z_fine::AbstractVector, z_
     k_h = k_out ./ h
     
     k_support = get_kgrid(pmm_emu)
-    @show size(pmm_coarse), length(k_h), length(k_support)
     result_h = hmcode_pmm_fast(cosmo, zc, z_fine, k_h, pmm_coarse .* h^3;
         pk_cb_coarse = pcb_coarse .* h^3,
         k_support = k_support ./ h,

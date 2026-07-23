@@ -26,9 +26,6 @@ _eval_pk(f, k, z, iz) = f(k, z)
 const ND_HMCODE = 2.853
 
 struct HMcodeParams
-    R_nl::Vector{Float64}
-    n_eff::Vector{Float64}
-    C_curv::Vector{Float64}
     sigma_v::Vector{Float64}
     Delta_v::Vector{Float64}
     delta_c::Vector{Float64}
@@ -45,14 +42,10 @@ mutable struct HMcodeWorkspace
     R::Vector{Float64}
     k::Vector{Float64}
     zs::Vector{Float64}
-    sigma_fast::Any
-    Pk_fast::Any
     growth_itp::Any
     growth_LCDM_itp::Any
-    growth_itp_inverse::Any
     params_tweaks::HMcodeParams
     params_notweaks::HMcodeParams
-    Sigma::Matrix{Float64}
     nu_mat::Matrix{Float64}
     Pk_lin_mat::Matrix{Float64}
     Pk_wig_mat::Matrix{Float64}
@@ -70,12 +63,7 @@ mutable struct HMcodeWorkspace
     W2_buf::Vector{Matrix{Float64}}
     I1h_buf::Vector{Vector{Float64}}
     Pk1h_buf::Vector{Vector{Float64}}
-    Pkwig_buf::Vector{Vector{Float64}}
     rv_eff_buf::Vector{Vector{Float64}}
-    zf_buf::Vector{Vector{Float64}}
-    rv_buf::Vector{Vector{Float64}}
-    cc_buf::Vector{Vector{Float64}}
-    ln1pc_buf::Vector{Vector{Float64}}
     gcol_buf::Vector{Vector{Float64}}
     wtcol_buf::Vector{Vector{Float64}}
 end
@@ -173,19 +161,12 @@ function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nt
         compute_collapse_redshifts_fast!(view(zf_mat, :, iz), M, zs[iz], params_tweaks.delta_c[iz], cosmo.Omega_m, growth_itp, growth_itp_inverse, SigmaREval(sigma_fast, zs[iz], iz))
     end
     
-    return HMcodeWorkspace(M, R, collect(Float64.(k)), collect(Float64.(zs)), sigma_fast, Pk_fast, growth_itp, growth_LCDM_itp, growth_itp_inverse, params_tweaks, params_notweaks, Sigma, nu_mat, Pk_lin_mat, Pk_wig_mat, zeros(nk, nz), zeros(nk, nz), w1h_mat, zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zf_mat, zeros(nz), zeros(nz), [zeros(nM, nk) for _ in 1:nthreads], [zeros(nM, nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads])
-end
-
-function compute_sigma_grid!(Sigma, R_grid, zs, sigma_R)
-    @inbounds for iz in eachindex(zs), iM in eachindex(R_grid)
-        Sigma[iM, iz] = _eval_sigma(sigma_R, R_grid[iM], zs[iz], iz)
-    end
-    return Sigma
+    return HMcodeWorkspace(M, R, collect(Float64.(k)), collect(Float64.(zs)), growth_itp, growth_LCDM_itp, params_tweaks, params_notweaks, nu_mat, Pk_lin_mat, Pk_wig_mat, zeros(nk, nz), zeros(nk, nz), w1h_mat, zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zf_mat, zeros(nz), zeros(nz), [zeros(nM, nk) for _ in 1:nthreads], [zeros(nM, nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads])
 end
 
 function compute_hmcode_params(k, zs, Pk_lin, sigma_R, sigma_grid, R_grid, cosmo, growth_itp; tweaks=true, k_support=nothing)
     nz = length(zs); Om_m = cosmo.Omega_m; f_nu = cosmo.Omega_nu/Om_m
-    R_nl, n_eff, C_curv, sigma_v, Delta_v, delta_c, eta, A, f_damp, k_star, B, k_damp = (zeros(nz) for _ in 1:12)
+    R_nl, n_eff, sigma_v, Delta_v, delta_c, eta, A, f_damp, k_star, B, k_damp = (zeros(nz) for _ in 1:11)
     kmin = k_support === nothing ? k[1] : k_support[1]
     kmax = k_support === nothing ? k[end] : k_support[end]
     @inbounds for iz in 1:nz
@@ -204,7 +185,7 @@ function compute_hmcode_params(k, zs, Pk_lin, sigma_R, sigma_grid, R_grid, cosmo
             A[iz] = 1.0
         end
     end
-    return HMcodeParams(R_nl, n_eff, C_curv, sigma_v, Delta_v, delta_c, eta, A, f_damp, k_star, B, k_damp)
+    return HMcodeParams(sigma_v, Delta_v, delta_c, eta, A, f_damp, k_star, B, k_damp)
 end
 
 """
@@ -216,9 +197,6 @@ must retain the HMCode-2020 `k_star` quartic one-halo cutoff. See CAMB PR #136.
 function _hmcode_notweaks_params(params::HMcodeParams)
     nz = length(params.k_star)
     return HMcodeParams(
-        params.R_nl,
-        params.n_eff,
-        params.C_curv,
         params.sigma_v,
         params.Delta_v,
         params.delta_c,
@@ -254,7 +232,7 @@ function apply_baryonic_transform!(Wbuf, M, Mb, fstar, Om_m, Om_c, Om_b)
     return Wbuf
 end
 
-function _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, cosmo, tweaks, T_AGN, nu_iz, w1h_iz, rv_iz, rv_eff_tmp, c_iz, ln1pc_iz, Mb, fstar, Om_m, Om_c, Om_b, Wbuf, W2buf, I1h, Pk1h, Pkwig_tmp; use_fast_specials=true)
+function _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, nu_iz, w1h_iz, rv_iz, rv_eff_tmp, c_iz, ln1pc_iz, Mb, fstar, Om_m, Om_c, Om_b, Wbuf, W2buf, I1h, Pk1h; use_fast_specials=true)
     nk, nM = length(k), length(ws.M); η = hmpars.eta[iz]
     @inbounds for iM in 1:nM; rv_eff_tmp[iM] = rv_iz[iM] * (nu_iz[iM]^η); end
     if use_fast_specials; win_NFW_fast!(Wbuf, k, rv_eff_tmp, c_iz, ln1pc_iz); else; for ik in 1:nk, iM in 1:nM; Wbuf[iM, ik] = wnfw_xc(k[ik]*rv_eff_tmp[iM], c_iz[iM]); end; end
@@ -302,8 +280,8 @@ function _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, cosmo, tweaks, T_AGN,
 end
 
 function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=true, threaded=false, use_fast_specials=true, hmpars=tweaks ? ws.params_tweaks : ws.params_notweaks)
-    nk, nz, nM = length(k), length(zs), length(ws.M); Om_m, Om_b, Om_nu = cosmo.Omega_m, cosmo.Omega_b, cosmo.Omega_nu
-    Om_c, f_nu, rhom = Om_m - Om_b - Om_nu, Om_nu/Om_m, comoving_matter_density(Om_m)
+    nz, nM = length(zs), length(ws.M); Om_m, Om_b, Om_nu = cosmo.Omega_m, cosmo.Omega_b, cosmo.Omega_nu
+    Om_c, rhom = Om_m - Om_b - Om_nu, comoving_matter_density(Om_m)
     zc = 10.0; ac = scalefactor_from_redshift(zc); growth, growth_LCDM = ws.growth_itp, ws.growth_LCDM_itp
     feedback_params = (T_AGN === nothing) ? (B0=0.0, Bz=0.0, Mb0=0.0, Mbz=0.0, f0=0.0, fz=0.0) : get_feedback_parameters(T_AGN)
     w1h_ptr = ws.w1h_mat
@@ -318,7 +296,7 @@ function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=tr
         end
     end
     for iz in 1:nz
-        z = zs[iz]; dc, Dv, B = hmpars.delta_c[iz], hmpars.Delta_v[iz], hmpars.B[iz]
+        z = zs[iz]; Dv, B = hmpars.Delta_v[iz], hmpars.B[iz]
         if (T_AGN !== nothing) && (!tweaks); B = feedback_params.B0 * 10.0^(z * feedback_params.Bz); end
         
         a_obs = scalefactor_from_redshift(z); dolag = (growth(ac)/growth_LCDM(ac)) * (growth_LCDM(a_obs)/growth(a_obs))
@@ -333,15 +311,15 @@ function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=tr
     end
     if threaded
         @batch for iz in 1:nz
-            tid = threadid(); _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, cosmo, tweaks, T_AGN, view(ws.nu_mat, :, iz), view(w1h_ptr, :, iz), view(ws.rv, :, iz), ws.rv_eff_buf[tid], view(ws.cc, :, iz), view(ws.ln1pc, :, iz), ws.Mb_vec[iz], ws.fstar_vec[iz], Om_m, Om_c, Om_b, ws.W_buf[tid], ws.W2_buf[tid], ws.I1h_buf[tid], ws.Pk1h_buf[tid], ws.Pkwig_buf[tid]; use_fast_specials=use_fast_specials)
+            tid = threadid(); _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, view(ws.nu_mat, :, iz), view(w1h_ptr, :, iz), view(ws.rv, :, iz), ws.rv_eff_buf[tid], view(ws.cc, :, iz), view(ws.ln1pc, :, iz), ws.Mb_vec[iz], ws.fstar_vec[iz], Om_m, Om_c, Om_b, ws.W_buf[tid], ws.W2_buf[tid], ws.I1h_buf[tid], ws.Pk1h_buf[tid]; use_fast_specials=use_fast_specials)
         end
     else
-        for iz in 1:nz; _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, cosmo, tweaks, T_AGN, view(ws.nu_mat, :, iz), view(w1h_ptr, :, iz), view(ws.rv, :, iz), ws.rv_eff_buf[1], view(ws.cc, :, iz), view(ws.ln1pc, :, iz), ws.Mb_vec[iz], ws.fstar_vec[iz], Om_m, Om_c, Om_b, ws.W_buf[1], ws.W2_buf[1], ws.I1h_buf[1], ws.Pk1h_buf[1], ws.Pkwig_buf[1]; use_fast_specials=use_fast_specials); end
+        for iz in 1:nz; _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, view(ws.nu_mat, :, iz), view(w1h_ptr, :, iz), view(ws.rv, :, iz), ws.rv_eff_buf[1], view(ws.cc, :, iz), view(ws.ln1pc, :, iz), ws.Mb_vec[iz], ws.fstar_vec[iz], Om_m, Om_c, Om_b, ws.W_buf[1], ws.W2_buf[1], ws.I1h_buf[1], ws.Pk1h_buf[1]; use_fast_specials=use_fast_specials); end
     end
     return Pk_out
 end
 
-function hmcode_power!(Pk_out, k, zs, Pk_lin, sigma_R, cosmo, ws; T_AGN=10^7.8, threaded=true, use_fast_specials=true)
+function hmcode_power!(Pk_out, k, zs, cosmo, ws; T_AGN=10^7.8, threaded=true, use_fast_specials=true)
     hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=true, threaded=threaded, use_fast_specials=use_fast_specials)
     if T_AGN !== nothing
         hmcode_power_single!(ws.Ptmp1, k, zs, cosmo, ws; T_AGN=nothing, tweaks=false, threaded=threaded, use_fast_specials=use_fast_specials)
@@ -358,6 +336,6 @@ function hmcode_power(k, zs, Pk_lin, sigma_R, cosmo; T_AGN=10^7.8, Mmin=1e0, Mma
     M = exp.(range(log(Mmin), log(Mmax), length=nM))
     ws = HMcodeWorkspace(collect(Float64.(k)), collect(Float64.(zs)), M, cosmo, sigma_R, Pk_lin; nthreads=Threads.maxthreadid(), k_support=k_support)
     Pk_out = zeros(length(k), length(zs))
-    hmcode_power!(Pk_out, ws.k, ws.zs, Pk_lin, sigma_R, cosmo, ws; T_AGN=T_AGN, threaded=threaded, use_fast_specials=use_fast_specials)
+    hmcode_power!(Pk_out, ws.k, ws.zs, cosmo, ws; T_AGN=T_AGN, threaded=threaded, use_fast_specials=use_fast_specials)
     return Pk_out
 end

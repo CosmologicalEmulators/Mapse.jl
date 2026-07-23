@@ -48,6 +48,7 @@
         δ = abs.(smart_dmo .- ref_dmo)
         rel = δ ./ max.(abs.(ref_dmo), eps(Float64))
         max_err = maximum(rel)
+        @info "DMO max error for N=$n: $(max_err * 100)%"
         @test max_err < 0.0051 # Ensure max relative diff is below 0.51%
     end
 
@@ -68,6 +69,7 @@
         δ = abs.(smart_fb .- ref_fb)
         rel = δ ./ max.(abs.(ref_fb), eps(Float64))
         max_err = maximum(rel)
+        @info "FB max error for N=$n: $(max_err * 100)%"
         @test max_err < 0.0051 # Ensure max relative diff is below 0.51%
     end
 end

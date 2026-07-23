@@ -521,7 +521,7 @@ include("test_hmcode_reactant.jl")
 
 @testset "HMCode-2020 Baryonic Response vs Patched CLASS" begin
     # UCF-2: Direct helper invariant test
-    dummy_params = Mapse.HMcode.HMcodeParams(ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), fill(1.23, 10), ones(10), ones(10))
+    dummy_params = Mapse.HMcode.HMcodeParams(ones(10), ones(10), ones(10), ones(10), ones(10), ones(10), fill(1.23, 10), ones(10), ones(10))
     notweaks_params = Mapse.HMcode._hmcode_notweaks_params(dummy_params)
     @test notweaks_params.k_star == fill(1.23, 10)
     @test notweaks_params.eta == zeros(10)

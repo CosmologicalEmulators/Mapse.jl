@@ -2,21 +2,6 @@
 using Roots
 using Integrals
 
-# ------------------------------------------------------------
-# Utility equivalents
-# ------------------------------------------------------------
-
-is_array_monotonic(x::AbstractVector) = all(diff(x) .> 0.0)
-
-"""
-Python-equivalent linear-spacing checker.
-The original Python implementation is quirky; here we keep intended behavior.
-"""
-function is_array_linear(x::AbstractVector; atol::Real = 1e-8)
-    dx = diff(x)
-    all(abs.(dx .- dx[1]) .<= atol)
-end
-
 """Local derivative from sampled values using linear/quadratic stencils."""
 function derivative_from_samples(x::Real, xs::AbstractVector, fs::AbstractVector)
     @assert length(xs) == length(fs)
@@ -69,8 +54,6 @@ function Tk_EH_nowiggle(
     C = @. 14.2 + 731.0 / (1.0 + 62.5 * q)
     return @. L / (L + C * q^2)
 end
-Tk_EH_nowiggle(k::Real, h::Real, wm::Real, wb::Real, T_CMB::Real = 2.725) =
-    Tk_EH_nowiggle([float(k)], h, wm, wb, T_CMB)[1]
 
 # Tophat Fourier transform used by sigmaV(R>0)
 function _Tophat_k(x::Real)
@@ -121,7 +104,6 @@ function sigmaV(
     Pk;
     kmin::Real = 0.0,
     kmax::Real = Inf,
-    eps::Real = 1e-4,
 )
     integrand = if R == 0
         k -> Pk(k)
@@ -132,18 +114,6 @@ function sigmaV(
     sigmaV_squared = solve(prob, QuadGKJL(), reltol=1e-3).u
     return sqrt(sigmaV_squared / (2.0 * pi^2)) / sqrt(3.0)
 end
-
-# Backward-compatible convenience (previous local API)
-"""
-    sigmaV(Pk, kmin::Real = 0.0, kmax::Real = Inf, eps::Real = 1e-4)
-
-Compute the 1D RMS displacement using Pk. Note that when called without explicit `kmin`
-and `kmax` arguments, it defaults to integrating over the infinite range `[0.0, Inf]`,
-which differs from the finite-support production HMCode path that integrates strictly
-over the linear power spectrum support grid.
-"""
-sigmaV(Pk, kmin::Real = 0.0, kmax::Real = Inf, eps::Real = 1e-4) =
-    sigmaV(0.0, Pk; kmin=kmin, kmax=kmax, eps=eps)
 
 # ------------------------------------------------------------
 # Dewiggle

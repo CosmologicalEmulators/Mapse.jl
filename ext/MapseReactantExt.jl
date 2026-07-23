@@ -28,11 +28,6 @@ import Mapse:
     HalofitCosmology,
     HMCodeCosmology,
     _HALOFIT_NEWTON_STEPS,
-    _halofit_integrate,
-    _halofit_σ2_derivs,
-    _halofit_rnl,
-    _halofit_Pmm_one_z_unchecked,
-    _halofit_Pmm_unchecked,
     _validate_halofit_inputs,
     _validate_halofit_background,
     _hmcode_choose_cb,
@@ -42,8 +37,6 @@ import Mapse:
     hmcode_pmm_fast_two_splines,
     hmcode_boost,
     predict_baryonic_discontinuity,
-    predict_baryonic_discontinuity,
-    build_smart_coarse_grid,
     build_piecewise_coarse_grid,
     hmcode_pmm_baryonic_smart,
     hmcode_pmm_dmo_smart
@@ -110,40 +103,6 @@ Base.@nospecializeinfer function Reactant.make_tracer(
     kwargs...,
 )
     return prev
-end
-function _halofit_r_integrate(x::AbstractVector, y::AbstractVector)
-    n = length(x)
-    last_simpson = isodd(n) ? n : n - 1
-
-    i0 = 1:2:(last_simpson - 2)
-    i1 = 2:2:(last_simpson - 1)
-    i2 = 3:2:last_simpson
-
-    x0 = x[i0]
-    x1 = x[i1]
-    x2 = x[i2]
-    y0 = y[i0]
-    y1 = y[i1]
-    y2 = y[i2]
-
-    h0 = x1 .- x0
-    h1 = x2 .- x1
-    simpson_terms = (h0 .+ h1) ./ 6 .* (
-        (2 .- h1 ./ h0) .* y0 .+
-        ((h0 .+ h1) .^ 2 ./ (h0 .* h1)) .* y1 .+
-        (2 .- h0 ./ h1) .* y2
-    )
-    total = sum(simpson_terms)
-
-    if iseven(n)
-        xn = x[n:n]
-        xprev = x[(n - 1):(n - 1)]
-        yn = y[n:n]
-        yprev = y[(n - 1):(n - 1)]
-        total += sum((xn .- xprev) .* (yn .+ yprev) ./ 2)
-    end
-
-    return total
 end
 
 function _halofit_integrate_columns(x::AbstractVector, y::AbstractMatrix)
@@ -278,36 +237,6 @@ function _halofit_power_columns(cpar::HalofitCosmology, pk_lin_mm_z::AbstractMat
                    (one(T) .+ Δ2_linaa .* α) .* exp.(-y ./ T(4) .- y .^ 2 ./ T(8))
 
     return (pk_halo_dim .+ pk_quasi_dim) ./ (k_col .^ 3 .* anorm)
-end
-
-function _halofit_r_σ2_derivs(logk::AbstractVector, k::AbstractVector, pk_lin::AbstractVector, R)
-    kR2 = (k .* R) .^ 2
-    exp_term = exp.(-kR2)
-    integrand_pre = (k .^ 3) .* pk_lin ./ (2π^2)
-
-    sig2 = _halofit_r_integrate(logk, integrand_pre .* exp_term)
-    dsig2dR = -2 * R * _halofit_r_integrate(logk, integrand_pre .* (k .^ 2) .* exp_term)
-    is_sig_invalid = (sig2 .<= zero(eltype(sig2))) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf))
-    d1 = ifelse(is_sig_invalid, eltype(sig2)(NaN), dsig2dR * R / sig2)
-
-    d2sig2dR2 = _halofit_r_integrate(logk,
-        integrand_pre .* (k .^ 2) .* exp_term .* (-2 .+ 4 .* kR2))
-    d2 = ifelse(is_sig_invalid, eltype(sig2)(NaN), (R^2 / sig2) * d2sig2dR2 + d1 - d1^2)
-
-    return sig2, d1, d2
-end
-
-function _halofit_r_rnl(logk::AbstractVector, k::AbstractVector, pk_lin::AbstractVector)
-    lR = zero(eltype(logk))
-    for _ in 1:_HALOFIT_NEWTON_STEPS
-        sig2, d1, _ = _halofit_r_σ2_derivs(logk, k, pk_lin, exp(lR))
-        is_invalid = (sig2 .<= zero(sig2)) .| (sig2 .!= sig2) .| (sig2 .== eltype(sig2)(Inf)) .| (d1 .== zero(d1)) .| (d1 .!= d1) .| (d1 .== eltype(d1)(Inf)) .| (d1 .== eltype(d1)(-Inf))
-        step_raw = ifelse(is_invalid, eltype(sig2)(NaN), log(sig2) / d1)
-        # Guard against a finite but tiny d1 producing an Inf step.
-        step = ifelse(!isfinite(step_raw), eltype(sig2)(NaN), step_raw)
-        lR -= step
-    end
-    return exp(lR)
 end
 
 function _halofit_r_Pmm_unchecked(cpar::HalofitCosmology, z::AbstractVector,
