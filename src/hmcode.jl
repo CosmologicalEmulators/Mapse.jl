@@ -124,7 +124,28 @@ function _hmcode_linear_interpolators(z::AbstractVector, k::AbstractVector, pk_l
     logk = log.(Float64.(k))
     logpk = log.(Float64.(pk_lin_z))
     pk_lin = HMCodeLinearInterpolator(logk, logpk, z)
-    sigma_R = HMCodeSigmaInterpolator(logk, logpk, k, z)
+
+    # CAMB continues its log-power lookup beyond the tabulated support when
+    # evaluating sigma(R). Fit the local high-k slope and add the same fixed
+    # continuation used by the JAX and Reactant HMCode kernels.
+    log_step = log(k[end] / k[end - 1])
+    log_factors = collect(range(log_step, log(1.0e4); length=64))
+    k_tail = k[end] .* exp.(log_factors)
+    nfit = min(12, length(k))
+    fit_indices = (length(k) - nfit + 1):length(k)
+    logk_fit = logk[fit_indices]
+    centered_logk = logk_fit .- mean(logk_fit)
+    logpk_fit = logpk[fit_indices, :]
+    centered_logpk = logpk_fit .- mean(logpk_fit; dims=1)
+    high_k_slope = vec(sum(
+        centered_logpk .* reshape(centered_logk, :, 1); dims=1) ./
+        sum(centered_logk .^ 2))
+    pk_tail = pk_lin_z[end:end, :] .* exp.(
+        reshape(log_factors, :, 1) .* reshape(high_k_slope, 1, :))
+    k_sigma = vcat(k, k_tail)
+    logk_sigma = log.(Float64.(k_sigma))
+    logpk_sigma = log.(Float64.(vcat(pk_lin_z, pk_tail)))
+    sigma_R = HMCodeSigmaInterpolator(logk_sigma, logpk_sigma, k_sigma, z)
     return pk_lin, sigma_R
 end
 

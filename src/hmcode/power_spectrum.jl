@@ -176,10 +176,10 @@ function compute_hmcode_params(k, zs, Pk_lin, sigma_R, sigma_grid, R_grid, cosmo
         R_nl[iz], sigma_v[iz], n_eff[iz], k_star[iz] = Rnl, sv, neff, 0.05618 * s8^(-1.013)
         if tweaks
             k_damp[iz] = 0.05699 * s8^(-1.089)
-            f_damp[iz] = 0.2696 * s8^0.9403
+            f_damp[iz] = clamp(0.2696 * s8^0.9403, 1.0e-3, 0.99)
             eta[iz] = 0.1281 * s8^(-0.3644)
             B[iz] = 5.196
-            A[iz] = 1.875 * (1.603)^neff
+            A[iz] = clamp(1.875 * (1.603)^neff, 0.5, 2.0)
         else
             B[iz] = 4.0
             A[iz] = 1.0

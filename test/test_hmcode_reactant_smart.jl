@@ -4,6 +4,81 @@ using Enzyme
 using Reactant
 using Mapse
 
+function _native_hmcode_cosmology(params, sigma_8)
+    h = params[3] / 100
+    omega_b = params[4] / h^2
+    omega_nu = (params[6] / 93.14) / h^2
+    omega_m = omega_b + params[5] / h^2 + omega_nu
+    return Mapse.HMCodeCosmology(
+        omega_m, omega_b, h, params[2], sigma_8,
+        params[7], params[8], omega_nu, 0.0)
+end
+
+function _native_linear_spectra(params, z, pmm_emu, pcb_emu, growth_emu)
+    emulator_input = vcat(
+        reshape(z, 1, :), repeat(reshape(params, :, 1), 1, length(z)))
+    growth = vec(Mapse.AbstractCosmologicalEmulators.run_emulator(
+        emulator_input, growth_emu)[6:6, :])
+    return (
+        Mapse.get_Pk(params, z, growth, pmm_emu),
+        Mapse.get_Pk(params, z, growth, pcb_emu),
+    )
+end
+
+function _native_hmcode_prediction(
+    params, z, k, logT_AGN, pmm_emu, pcb_emu, growth_emu, sigma_8;
+    smart::Bool, feedback::Bool,
+)
+    cosmo = _native_hmcode_cosmology(params, sigma_8)
+    h = cosmo.h
+    temperature = feedback ? 10.0^logT_AGN : nothing
+    z_coarse = if smart
+        if feedback
+            feature = Mapse.predict_baryonic_discontinuity(
+                cosmo; T_AGN=temperature)
+            Mapse.build_smart_coarse_grid(first(z), last(z), 24, feature)
+        else
+            collect(range(first(z), last(z); length=24))
+        end
+    else
+        z
+    end
+    pk_mm, pk_cb = _native_linear_spectra(
+        params, z_coarse, pmm_emu, pcb_emu, growth_emu)
+    k_support_h = collect(Mapse.get_kgrid(pmm_emu)) ./ h
+
+    if !smart
+        return Mapse.hmcode_pmm_physical(
+            cosmo, z, k, pk_mm;
+            pk_cb_z=pk_cb,
+            k_support=collect(Mapse.get_kgrid(pmm_emu)),
+            T_AGN=temperature,
+            nM=128,
+            threaded=false,
+        )
+    elseif feedback
+        result_h = Mapse.hmcode_pmm_baryonic_smart(
+            cosmo, z, k ./ h, pk_mm .* h^3;
+            pk_cb_coarse=pk_cb .* h^3,
+            k_support=k_support_h,
+            N_coarse=24,
+            T_AGN=temperature,
+            nM=128,
+            threaded=false,
+        )
+    else
+        result_h = Mapse.hmcode_pmm_fast(
+            cosmo, z_coarse, z, k ./ h, pk_mm .* h^3;
+            pk_cb_coarse=pk_cb .* h^3,
+            k_support=k_support_h,
+            T_AGN=nothing,
+            nM=128,
+            threaded=false,
+        )
+    end
+    return result_h ./ h^3
+end
+
 @testset "Full Reactant smart HMCode pipeline" begin
     Reactant.set_default_backend("cpu")
     ext = Base.get_extension(Mapse, :MapseReactantExt)
@@ -28,6 +103,9 @@ using Mapse
     sigma_truncated = sqrt(ext._hmcode_trapz_dim1_3d(
         log.(sigma_k_host), truncated_integrand)[1])
     @test sigma_extended_host > 1.1sigma_truncated
+    _, native_sigma = Mapse._hmcode_linear_interpolators(
+        [0.0], sigma_k_host, sigma_power_host)
+    @test native_sigma(first(sigma_radius_host), 0.0) > 1.1sigma_truncated
 
     boundsR = Reactant.to_rarray([0.0, 3.0, 10.0])
     grid_kernel(bounds) = Mapse.build_piecewise_coarse_grid(bounds, 24, 14)
@@ -167,8 +245,9 @@ using Mapse
         feedback_reference = permutedims(fixture[:, 129:256])[:, keep]
         case_paramsR = Reactant.to_rarray(case_params)
         case_logT_R = Reactant.to_rarray([case_logT])
-        case_kR = Reactant.to_rarray(
-            collect(10.0 .^ range(-3.0, 1.0; length=128)) .* case_params[3] / 100)
+        case_k_host = collect(10.0 .^ range(-3.0, 1.0; length=128)) .*
+            case_params[3] / 100
+        case_kR = Reactant.to_rarray(case_k_host)
         prediction = compiled_smart(
             case_paramsR, zR, z_limitsR, case_kR, case_logT_R,
             pmm_emuR, pcb_emuR, growth_emuR, cosmo)
@@ -191,6 +270,24 @@ using Mapse
             max.(abs.(dmo_reference), eps(Float64))
         @test maximum(case_relative_error) < 0.011
         @test maximum(dmo_relative_error) < 0.011
+
+        for (smart, feedback, reference) in (
+            (false, false, dmo_reference),
+            (true, false, dmo_reference),
+            (false, true, feedback_reference),
+            (true, true, feedback_reference),
+        )
+            native_prediction = _native_hmcode_prediction(
+                case_params, z_host, case_k_host, case_logT,
+                pmm_emu, pcb_emu, growth_emu, cosmo.sigma_8;
+                smart=smart, feedback=feedback)
+            @test size(native_prediction) == size(reference)
+            @test all(isfinite, native_prediction)
+            @test all(>(0), native_prediction)
+            native_relative_error = abs.(native_prediction .- reference) ./
+                max.(abs.(reference), eps(Float64))
+            @test maximum(native_relative_error) < 0.011
+        end
     end
 
     # Reverse mode must compile through the complete small smart pipeline.
