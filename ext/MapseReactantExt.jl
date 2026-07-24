@@ -1181,34 +1181,42 @@ function _hmcode_pmm_baryonic_smart_device(
     return result_h ./ h^3
 end
 
-function Mapse.hmcode_pmm_dmo_smart(params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec, k_out::ReactantVec,
-    pmm_emu::Mapse.TransferFunctionEmulator, pcb_emu::Mapse.TransferFunctionEmulator,
-    growth_emu, cosmo::HMCodeCosmology;
-    N_coarse::Int=32, N_left::Int=16, nM::Int=128)
+"""Fully traced emulator-backed DMO smart HMCode pipeline.
 
+The linear emulators use the background emulator over `0 <= z <= 3` while
+HMCode's internal growth tables are integrated from the traced cosmology.
+Inputs and outputs use physical Mpc units.
+"""
+function Mapse.hmcode_pmm_dmo_smart(
+    params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec,
+    k_out::ReactantVec, pmm_emu::Mapse.TransferFunctionEmulator,
+    pcb_emu::Mapse.TransferFunctionEmulator,
+    growth_emu::AbstractCosmologicalEmulators.GenericEmulator,
+    cosmo::HMCodeCosmology;
+    N_coarse::Int=24, N_left::Int=Mapse._baryonic_left_nodes(N_coarse),
+    nM::Int=128, growth_na::Int=64)
     z_min = z_limits[1:1]
     z_max = z_limits[2:2]
     fraction = eltype(z_limits).(collect(0:(N_coarse - 1))) ./ eltype(z_limits)(N_coarse - 1)
     zc = z_min .+ fraction .* (z_max .- z_min)
 
-    zc_row = reshape(zc, 1, :)
-    params_mat = repeat(reshape(params, :, 1), 1, N_coarse)
-    growth_input = vcat(zc_row, params_mat)
-    growth_output = AbstractCosmologicalEmulators.run_emulator(growth_input, growth_emu)
-    growth_coarse = vec(growth_output[6:6, :])
-    
+    growth_coarse = _growth_emulator_D(params, zc, growth_emu)
     pmm_coarse = Mapse.get_Pk(params, zc, growth_coarse, pmm_emu)
     pcb_coarse = Mapse.get_Pk(params, zc, growth_coarse, pcb_emu)
-    
-    h = cosmo.h
-    
+
+    dynamic_cosmo = _hmcode_dynamic_cosmology(params, cosmo)
+    growth_tables = _hmcode_dynamic_growth_tables(
+        params, cosmo; na=growth_na)
+    h = dynamic_cosmo.h
     k_support = Mapse.get_kgrid(pmm_emu)
-    result_h = Mapse.hmcode_pmm_fast(cosmo, zc, z_fine, k_out ./ h, pmm_coarse .* h^3;
-        pk_cb_coarse = pcb_coarse .* h^3,
-        k_support = k_support ./ h,
-        T_AGN = nothing,
-        nM = nM)
-        
+    result_h = Mapse.hmcode_pmm_fast(
+        dynamic_cosmo, zc, z_fine, k_out ./ h, pmm_coarse .* h^3;
+        pk_cb_coarse=pcb_coarse .* h^3,
+        k_support=k_support ./ h,
+        T_AGN=nothing,
+        growth_tables=growth_tables,
+        nM=nM)
+
     return result_h ./ h^3
 end
 

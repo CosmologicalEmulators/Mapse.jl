@@ -148,6 +148,14 @@ using Mapse
         ("low_h0_strong_evolution", [3.18, 0.92, 55.0, 0.0215, 0.15, 0.2, -2.2, 1.3], 7.75),
         ("high_h0_negative_wa", [2.92, 1.01, 87.0, 0.0245, 0.09, 0.35, -0.55, -1.1], 8.15),
     )
+    function dmo_pipeline(p, z, z_limits, k, pmm, pcb, growth, c)
+        return Mapse.hmcode_pmm_dmo_smart(
+            p, z, z_limits, k, pmm, pcb, growth, c;
+            N_coarse=24, N_left=14, nM=128, growth_na=64)
+    end
+    compiled_dmo = Reactant.@compile sync=true dmo_pipeline(
+        paramsR, zR, z_limitsR, kR,
+        pmm_emuR, pcb_emuR, growth_emuR, cosmo)
     fixture_root = joinpath(@__DIR__, "data", "hmcode_multicosmo")
     for (index, (name, case_params, case_logT)) in enumerate(multicosmo_cases)
         @test case_params[7] + case_params[8] < 0.0
@@ -155,6 +163,7 @@ using Mapse
             fixture_root,
             "case_$(lpad(index - 1, 2, '0'))_$(name).txt",
         ); comments=true)
+        dmo_reference = permutedims(fixture[:, 1:128])[:, keep]
         feedback_reference = permutedims(fixture[:, 129:256])[:, keep]
         case_paramsR = Reactant.to_rarray(case_params)
         case_logT_R = Reactant.to_rarray([case_logT])
@@ -163,14 +172,25 @@ using Mapse
         prediction = compiled_smart(
             case_paramsR, zR, z_limitsR, case_kR, case_logT_R,
             pmm_emuR, pcb_emuR, growth_emuR, cosmo)
+        dmo_prediction = compiled_dmo(
+            case_paramsR, zR, z_limitsR, case_kR,
+            pmm_emuR, pcb_emuR, growth_emuR, cosmo)
         Reactant.synchronize(prediction)
+        Reactant.synchronize(dmo_prediction)
         prediction_host = Array(prediction)
+        dmo_prediction_host = Array(dmo_prediction)
         @test size(prediction_host) == size(feedback_reference)
+        @test size(dmo_prediction_host) == size(dmo_reference)
         @test all(isfinite, prediction_host)
+        @test all(isfinite, dmo_prediction_host)
         @test all(>(0), prediction_host)
+        @test all(>(0), dmo_prediction_host)
         case_relative_error = abs.(prediction_host .- feedback_reference) ./
             max.(abs.(feedback_reference), eps(Float64))
+        dmo_relative_error = abs.(dmo_prediction_host .- dmo_reference) ./
+            max.(abs.(dmo_reference), eps(Float64))
         @test maximum(case_relative_error) < 0.011
+        @test maximum(dmo_relative_error) < 0.011
     end
 
     # Reverse mode must compile through the complete small smart pipeline.
