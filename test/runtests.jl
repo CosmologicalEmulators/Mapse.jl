@@ -518,6 +518,7 @@ end
 
 include("test_halofit_reactant.jl")
 include("test_hmcode_reactant.jl")
+include("test_hmcode_reactant_smart.jl")
 
 @testset "HMCode-2020 Baryonic Response vs Patched CLASS" begin
     # UCF-2: Direct helper invariant test

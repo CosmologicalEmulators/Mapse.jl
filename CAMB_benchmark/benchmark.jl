@@ -21,7 +21,7 @@ const PARAMS = [3.044, NS, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
 const COSMO = Mapse.HMCodeCosmology(ΩM, ΩB, H, NS, SIGMA8, -1.0, 0.0, Ων, 0.0)
 const K_LABEL = collect(10.0 .^ range(-3.0, 1.0; length=128)) # requested h Mpc⁻¹ grid
 const K_OUT = K_LABEL .* H # physical Mpc⁻¹ passed to the public API
-const Z_FINE = collect(range(0.0, 3.5; length=150))
+const Z_FINE = collect(range(0.0, 3.0; length=150))
 const N_COARSE = (24, 32, 40)
 const LOGT_AGN = log10(T_AGN)
 
@@ -133,7 +133,7 @@ try
     for n in N_COARSE
         println("Compiling and warming up Reactant smart DMO (N=$n)...")
         compiled_dmo = Reactant.@compile sync=true Mapse.hmcode_pmm_dmo_smart(
-            params_R, z_fine_R, z_limits_R, k_out_R, pmm_emu_R, pcb_emu_R, growth_emu_R, COSMO; N_coarse=n, N_left=n ÷ 2, nM=NM)
+            params_R, z_fine_R, z_limits_R, k_out_R, pmm_emu_R, pcb_emu_R, growth_emu_R, COSMO; N_coarse=n, N_left=round(Int, (n - 1) * 5 / 8), nM=NM)
         warm_dmo = compiled_dmo(params_R, z_fine_R, z_limits_R, k_out_R, pmm_emu_R, pcb_emu_R, growth_emu_R, COSMO)
         Reactant.synchronize(warm_dmo)
         t_dmo = @benchmark begin
@@ -145,7 +145,7 @@ try
         println("Compiling and warming up Reactant smart feedback (N=$n)...")
         compiled = Reactant.@compile sync=true Mapse.hmcode_pmm_baryonic_smart(
             params_R, z_fine_R, z_limits_R, k_out_R, logT_R, pmm_emu_R, pcb_emu_R,
-            growth_emu_R, COSMO; N_coarse=n, N_left=n ÷ 2, nM=NM)
+            growth_emu_R, COSMO; N_coarse=n, N_left=round(Int, (n - 1) * 5 / 8), nM=NM)
         warm = compiled(params_R, z_fine_R, z_limits_R, k_out_R, logT_R,
                         pmm_emu_R, pcb_emu_R, growth_emu_R, COSMO)
         Reactant.synchronize(warm)

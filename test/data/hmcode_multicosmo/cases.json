@@ -1,0 +1,79 @@
+{
+  "format_version": 1,
+  "parameter_order": [
+    "ln10As",
+    "ns",
+    "H0",
+    "omega_b",
+    "omega_c",
+    "Mnu",
+    "w0",
+    "wa"
+  ],
+  "grid": {
+    "z_min": 0.0,
+    "z_max": 3.5,
+    "n_z": 150,
+    "k_h_min": 0.001,
+    "k_h_max": 10.0,
+    "n_k": 128
+  },
+  "fixture_layout": {
+    "shape": [150, 256],
+    "columns_0_127": "CAMB mead2020 DMO P(k,z) in Mpc^3",
+    "columns_128_255": "CAMB mead2020_feedback P(k,z) in Mpc^3",
+    "k_grid": "logspace(k_h_min, k_h_max, n_k) * H0 / 100 in Mpc^-1"
+  },
+  "cases": [
+    {
+      "name": "fiducial_lcdm",
+      "params": [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0],
+      "log10_T_AGN": 7.8
+    },
+    {
+      "name": "low_baryon_high_cdm",
+      "params": [3.0, 0.95, 64.0, 0.0202, 0.178, 0.1, -1.0, 0.0],
+      "log10_T_AGN": 7.6
+    },
+    {
+      "name": "high_baryon_low_cdm",
+      "params": [3.1, 0.98, 72.0, 0.0248, 0.082, 0.1, -1.0, 0.0],
+      "log10_T_AGN": 8.2
+    },
+    {
+      "name": "evolving_quintessence",
+      "params": [3.08, 0.99, 74.0, 0.0235, 0.105, 0.15, -0.8, -0.4],
+      "log10_T_AGN": 7.9
+    },
+    {
+      "name": "near_early_de_boundary",
+      "params": [2.95, 0.93, 69.0, 0.021, 0.14, 0.02, -0.65, 0.55],
+      "log10_T_AGN": 7.7
+    },
+    {
+      "name": "phantom_positive_wa",
+      "params": [3.15, 1.0, 61.0, 0.024, 0.13, 0.25, -1.4, 0.6],
+      "log10_T_AGN": 8.1
+    },
+    {
+      "name": "phantom_negative_wa",
+      "params": [2.9, 0.94, 76.0, 0.022, 0.1, 0.3, -1.2, -1.0],
+      "log10_T_AGN": 7.65
+    },
+    {
+      "name": "high_neutrino_mass",
+      "params": [3.05, 0.97, 68.0, 0.023, 0.125, 0.45, -0.9, 0.15],
+      "log10_T_AGN": 8.0
+    },
+    {
+      "name": "low_h0_strong_evolution",
+      "params": [3.18, 0.92, 55.0, 0.0215, 0.15, 0.2, -2.2, 1.3],
+      "log10_T_AGN": 7.75
+    },
+    {
+      "name": "high_h0_negative_wa",
+      "params": [2.92, 1.01, 87.0, 0.0245, 0.09, 0.35, -0.55, -1.1],
+      "log10_T_AGN": 8.15
+    }
+  ]
+}

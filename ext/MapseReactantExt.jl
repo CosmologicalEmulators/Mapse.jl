@@ -365,6 +365,106 @@ function _hmcode_growth_tables_static(cosmo::HMCodeCosmology; lcdm::Bool=false, 
     return a, growth, agrowth
 end
 
+function _hmcode_growth_rhs_dynamic(a, d, v, cosmo::HMCodeCosmology)
+    fv = -(
+        2.0 .+ _hmcode_ah(a, cosmo, false) ./
+        _hmcode_hubble2(a, cosmo, false)
+    ) .* v ./ a
+    fd = 1.5 .* _hmcode_omega_m_a(a, cosmo, false) .* d ./ a .^ 2
+    return v, fv .+ fd
+end
+
+function _hmcode_growth_tables_dynamic(
+    anchor::ReactantVec,
+    cosmo::HMCodeCosmology;
+    na::Int=64,
+)
+    na >= 8 || throw(ArgumentError("Dynamic HMCode growth requires at least 8 nodes."))
+    a_init = 1.0e-4
+    # Early dark energy makes the growth equation stiff near a_init. A uniform
+    # 64-node grid is catastrophically inaccurate there. Keep fixed topology,
+    # but spend half the nodes before a=0.018; this reproduces the established
+    # 2000-node uniform solver across the multicosmology CAMB fixtures.
+    n_early = na ÷ 2
+    n_late = na - n_early + 1
+    a_template = vcat(
+        collect(range(a_init, 0.018; length=n_early)),
+        collect(range(0.018, 1.0; length=n_late))[2:end],
+    )
+    steps = diff(a_template)
+    a_grid = anchor[1:1] .* 0 .+ a_template
+    seed = sum(anchor[1:1]) * 0
+    a = seed + a_init
+    f_init = 1.0 .- _hmcode_omega_m_a(a, cosmo, false)
+    d = a .^ (1.0 .- 3.0 .* f_init ./ 5.0)
+    v = (1.0 .- 3.0 .* f_init ./ 5.0) .* a .^ (-3.0 .* f_init ./ 5.0)
+    accumulated = d
+    growth = anchor[1:1] .* 0 .+ d
+    agrowth = anchor[1:1] .* 0 .+ accumulated
+
+    for index in 1:(na - 1)
+        step = steps[index]
+        a_next = a .+ step
+        k1d, k1v = _hmcode_growth_rhs_dynamic(a, d, v, cosmo)
+        k2d, k2v = _hmcode_growth_rhs_dynamic(
+            a .+ 0.5step, d .+ 0.5step .* k1d,
+            v .+ 0.5step .* k1v, cosmo)
+        k3d, k3v = _hmcode_growth_rhs_dynamic(
+            a .+ 0.5step, d .+ 0.5step .* k2d,
+            v .+ 0.5step .* k2v, cosmo)
+        k4d, k4v = _hmcode_growth_rhs_dynamic(
+            a_next, d .+ step .* k3d, v .+ step .* k3v,
+            cosmo)
+        d_next = d .+ step .* (k1d .+ 2.0 .* k2d .+ 2.0 .* k3d .+ k4d) ./ 6.0
+        v_next = v .+ step .* (k1v .+ 2.0 .* k2v .+ 2.0 .* k3v .+ k4v) ./ 6.0
+        accumulated_next = accumulated .+ 0.5step .* (
+            d_next ./ a_next .+ d ./ a)
+        growth = vcat(growth, anchor[1:1] .* 0 .+ d_next)
+        agrowth = vcat(agrowth, anchor[1:1] .* 0 .+ accumulated_next)
+        a = a_next
+        d = d_next
+        v = v_next
+        accumulated = accumulated_next
+    end
+    return a_grid, growth, agrowth
+end
+
+function _hmcode_dynamic_cosmology(params::ReactantVec, reference::HMCodeCosmology)
+    h = sum(params[3:3]) / 100
+    omega_b = sum(params[4:4]) / h^2
+    omega_nu = (sum(params[6:6]) / 93.14) / h^2
+    omega_m = omega_b + sum(params[5:5]) / h^2 + omega_nu
+    return HMCodeCosmology(
+        omega_m, omega_b, h, sum(params[2:2]), reference.sigma_8,
+        sum(params[7:7]), sum(params[8:8]), omega_nu, reference.Omega_k)
+end
+
+function _hmcode_dynamic_growth_tables(
+    params::ReactantVec,
+    reference::HMCodeCosmology;
+    na::Int=64,
+)
+    cosmo = _hmcode_dynamic_cosmology(params, reference)
+    lcdm_cosmo = HMCodeCosmology(
+        cosmo.Omega_m, cosmo.Omega_b, cosmo.h, cosmo.n_s,
+        cosmo.sigma_8, -1.0, 0.0, cosmo.Omega_nu, 0.0)
+    a_grid, growth, agrowth = _hmcode_growth_tables_dynamic(
+        params, cosmo; na=na)
+    _, growth_lcdm, _ = _hmcode_growth_tables_dynamic(
+        params, lcdm_cosmo; na=na)
+    return a_grid, growth, agrowth, growth_lcdm
+end
+
+function _growth_emulator_D(params::ReactantVec, z::ReactantVec,
+                            growth_emu::AbstractCosmologicalEmulators.GenericEmulator)
+    n_z = length(z)
+    emulator_input = vcat(
+        reshape(z, 1, n_z),
+        reshape(params, :, 1) .* ones(eltype(z), 1, n_z),
+    )
+    output = AbstractCosmologicalEmulators.run_emulator(emulator_input, growth_emu)
+    return vec(output[6:6, :])
+end
 
 function _hmcode_tophat(x)
     return ifelse.(abs.(x) .< 1.0e-5,
@@ -562,13 +662,33 @@ function _hmcode_pk_wiggle_columns(k, pk_lin_kz, h, omega_m_h2, omega_b_h2, n_s)
 end
 
 function _hmcode_sigma_grid(k_support, pk_cb_kz, R)
-    logk = log.(k_support)
-    nk = length(k_support)
+    nk_support = length(k_support)
+    log_step = log(sum(k_support[end:end]) / sum(k_support[(end - 1):(end - 1)]))
+    tail_fraction = collect(range(0.0, 1.0; length=64))
+    log_factors = log_step .+ tail_fraction .* (log(1.0e4) .- log_step)
+    k_tail = k_support[end:end] .* exp.(log_factors)
+
+    logk_fit = log.(k_support[(end - 11):end])
+    centered_logk = logk_fit .- sum(logk_fit) ./ 12
+    logp_fit = log.(pk_cb_kz[(end - 11):end, :])
+    centered_logp = logp_fit .- sum(logp_fit; dims=1) ./ 12
+    high_k_slope = vec(sum(
+        centered_logp .* reshape(centered_logk, :, 1); dims=1) ./
+        sum(centered_logk .^ 2)
+    )
+    pk_tail = pk_cb_kz[end:end, :] .* exp.(
+        reshape(log_factors, :, 1) .* reshape(high_k_slope, 1, :))
+    k_sigma = vcat(k_support, k_tail)
+    pk_sigma = vcat(pk_cb_kz, pk_tail)
+
+    logk = log.(k_sigma)
+    nk = nk_support + length(k_tail)
     nM = length(R)
     nz = size(pk_cb_kz, 2)
-    k3 = reshape(k_support .^ 3, nk, 1, 1)
-    pk = reshape(pk_cb_kz, nk, 1, nz)
-    W = _hmcode_tophat(reshape(k_support, nk, 1, 1) .* reshape(R, 1, nM, 1))
+    k3 = reshape(k_sigma .^ 3, nk, 1, 1)
+    pk = reshape(pk_sigma, nk, 1, nz)
+    W = _hmcode_tophat(
+        reshape(k_sigma, nk, 1, 1) .* reshape(R, 1, nM, 1))
     integrand = k3 .* pk .* W .^ 2 ./ (2.0 * pi^2)
     sigma2 = _hmcode_trapz_dim1_3d(logk, integrand)
     return sqrt.(max.(sigma2, 0.0))
@@ -605,8 +725,8 @@ function _hmcode_compute_params(z, a_grid, growth, agrowth, sigma_mz, R, k_suppo
         dv,
         dc,
         0.1281 .* s8 .^ (-0.3644),
-        1.875 .* (1.603) .^ neff,
-        0.2696 .* s8 .^ 0.9403,
+        clamp.(1.875 .* (1.603) .^ neff, 0.5, 2.0),
+        clamp.(0.2696 .* s8 .^ 0.9403, 1.0e-3, 0.99),
         0.05618 .* s8 .^ (-1.013),
         z .* 0 .+ 5.196,
         0.05699 .* s8 .^ (-1.089),
@@ -786,14 +906,20 @@ function _hmcode_Pmm_reactant(cosmo::HMCodeCosmology, z::ReactantVec, k_out::Rea
                                k_support, pk_mm_support_kz::ReactantMat,
                                pk_cb_support_kz::ReactantMat; T_AGN=10.0^7.8,
                                Mmin=1.0, Mmax=1.0e18, nM=128,
-                               growth_cosmo=cosmo)
+                               growth_cosmo=cosmo, growth_tables=nothing)
     nM >= 2 || throw(ArgumentError("HMCode nM must be at least 2."))
     M = exp.(collect(range(log(float(Mmin)), log(float(Mmax)), length=nM)))
     R = _hmcode_lagrangian_radius(M, cosmo.Omega_m)
     pk_mm_out = _hmcode_loglog_interp_columns(k_support, pk_mm_support_kz, k_out)
     sigma_mz = _hmcode_sigma_grid(k_support, pk_cb_support_kz, R)
-    a_grid, growth, agrowth = _hmcode_growth_tables_static(growth_cosmo; lcdm=false)
-    _, growth_lcdm, _ = _hmcode_growth_tables_static(growth_cosmo; lcdm=true)
+    if growth_tables === nothing
+        a_grid, growth, agrowth = _hmcode_growth_tables_static(
+            growth_cosmo; lcdm=false)
+        _, growth_lcdm, _ = _hmcode_growth_tables_static(
+            growth_cosmo; lcdm=true)
+    else
+        a_grid, growth, agrowth, growth_lcdm = growth_tables
+    end
     params = _hmcode_compute_params(z, a_grid, growth, agrowth, sigma_mz, R,
                                     k_support, pk_mm_support_kz, cosmo)
     nu_mz = reshape(params.delta_c, 1, :) ./ sigma_mz
@@ -830,7 +956,7 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
                     k_support::Union{Nothing,AbstractVector}=nothing,
                     pk_cb_support_z::Union{Nothing,ReactantMat}=nothing,
                     T_AGN=10.0^7.8, Mmin=1.0, Mmax=1.0e18, nM=128,
-                    growth_cosmo=cosmo, kwargs...)
+                    growth_cosmo=cosmo, growth_tables=nothing, kwargs...)
     # HMCode's BAO smoothing requires a log-uniform support grid. Native Julia
     # validates that host-side contract before execution. Reactant receives
     # dynamic device arrays here, so materializing them solely to validate grid
@@ -841,7 +967,8 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
     pkcb === nothing && (pkcb = pk_mm_z)
     return _hmcode_Pmm_reactant(cosmo, z, k, k_linear, pk_mm_z, pkcb;
                                 T_AGN=T_AGN, Mmin=Mmin, Mmax=Mmax,
-                                nM=nM, growth_cosmo=growth_cosmo)
+                                nM=nM, growth_cosmo=growth_cosmo,
+                                growth_tables=growth_tables)
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
@@ -1009,8 +1136,10 @@ function hmcode_pmm_fast_two_splines(cosmo::HMCodeCosmology,
     pk_nl = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
                        pk_cb_z=pkcb, k_support=k_support, kwargs...)
     pk_t = copy(transpose(pk_nl))
-    left = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_t[1:nleft, :], z_coarse[1:nleft], z_fine)
-    right = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_t[nleft:end, :], z_coarse[nleft:end], z_fine)
+    z_left = min.(z_fine, z_split)
+    z_right = max.(z_fine, z_split)
+    left = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_t[1:nleft, :], z_coarse[1:nleft], z_left)
+    right = Mapse.AbstractCosmologicalEmulators.akima_interpolation(pk_t[nleft:end, :], z_coarse[nleft:end], z_right)
     mask = reshape(z_fine .<= z_split, :, 1)
     return copy(transpose(ifelse.(mask, left, right)))
 end
@@ -1019,7 +1148,9 @@ function _hmcode_pmm_baryonic_smart_device(
     params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec,
     k_out::ReactantVec, logT_AGN::ReactantVec, pmm_emu::Mapse.TransferFunctionEmulator,
     pcb_emu::Mapse.TransferFunctionEmulator, cosmo::HMCodeCosmology,
-    growth; N_coarse::Int=20, N_left::Int=12, nM::Int=32)
+    growth, growth_tables=nothing;
+    N_coarse::Int=20, N_left::Int=Mapse._baryonic_left_nodes(N_coarse),
+    nM::Int=32)
     z_coarse = Mapse.build_baryonic_coarse_grid(
         params, z_limits, logT_AGN, N_coarse, N_left)
     pk_mm = Mapse.get_Pk(params, z_coarse, growth, pmm_emu)
@@ -1045,7 +1176,8 @@ function _hmcode_pmm_baryonic_smart_device(
         dynamic_cosmo, z_coarse, z_fine, k_h, pk_mm_h;
         pk_cb_coarse=pk_cb_h, k_support=k_support_h,
         z_split=z_split, split_index=N_left + 1,
-        T_AGN=dynamic_T_AGN, growth_cosmo=cosmo, nM=nM)
+        T_AGN=dynamic_T_AGN, growth_cosmo=cosmo,
+        growth_tables=growth_tables, nM=nM)
     return result_h ./ h^3
 end
 
@@ -1092,40 +1224,41 @@ function hmcode_pmm_baryonic_smart(params::ReactantVec,
                                    pmm_emu::Mapse.TransferFunctionEmulator,
                                    pcb_emu::Mapse.TransferFunctionEmulator,
                                    cosmo::HMCodeCosmology;
-                                   N_coarse::Int=20, N_left::Int=12,
+                                   N_coarse::Int=20,
+                                   N_left::Int=Mapse._baryonic_left_nodes(N_coarse),
                                    nM::Int=32)
     z_coarse = Mapse.build_baryonic_coarse_grid(
         params, z_limits, logT_AGN, N_coarse, N_left)
     return _hmcode_pmm_baryonic_smart_device(
         params, z_fine, z_limits, pmm_emu.kgrid, logT_AGN, pmm_emu, pcb_emu, cosmo,
-        one.(z_coarse); N_coarse=N_coarse, N_left=N_left, nM=nM)
+        one.(z_coarse), nothing; N_coarse=N_coarse, N_left=N_left, nM=nM)
 end
 
 """Fully traced smart pipeline using an emulator-predicted D(z).
 
 `growth_emu` must be the official 9-input, 7-output generic background
 emulator. Its sixth output is D(z). The emulator is evaluated on the moving
-coarse grid and remains entirely inside the compiled Reactant graph.
+coarse grid and remains entirely inside the compiled Reactant graph. Its valid
+domain is `0 <= z <= 3`; callers must keep `z_limits` and `z_fine` inside that
+interval. HMCode's accumulated early-time growth is integrated separately from
+the dynamic cosmology on a fixed Reactant-compatible RK4 grid.
 """
 function hmcode_pmm_baryonic_smart(
     params::ReactantVec, z_fine::ReactantVec, z_limits::ReactantVec,
     logT_AGN::ReactantVec, pmm_emu::Mapse.TransferFunctionEmulator,
     pcb_emu::Mapse.TransferFunctionEmulator,
     growth_emu::AbstractCosmologicalEmulators.GenericEmulator,
-    cosmo::HMCodeCosmology; N_coarse::Int=20, N_left::Int=12, nM::Int=32)
+    cosmo::HMCodeCosmology; N_coarse::Int=20,
+    N_left::Int=Mapse._baryonic_left_nodes(N_coarse), nM::Int=32,
+    growth_na::Int=64)
     z_coarse = Mapse.build_baryonic_coarse_grid(
         params, z_limits, logT_AGN, N_coarse, N_left)
-    n_z = length(z_coarse)
-    emulator_input = vcat(
-        reshape(z_coarse, 1, n_z),
-        reshape(params, :, 1) .* ones(eltype(z_coarse), 1, n_z),
-    )
-    growth_output = AbstractCosmologicalEmulators.run_emulator(
-        emulator_input, growth_emu)
-    growth = vec(growth_output[6:6, :])
+    growth = _growth_emulator_D(params, z_coarse, growth_emu)
+    growth_tables = _hmcode_dynamic_growth_tables(
+        params, cosmo; na=growth_na)
     return _hmcode_pmm_baryonic_smart_device(
         params, z_fine, z_limits, pmm_emu.kgrid, logT_AGN, pmm_emu, pcb_emu, cosmo,
-        growth; N_coarse=N_coarse, N_left=N_left, nM=nM)
+        growth, growth_tables; N_coarse=N_coarse, N_left=N_left, nM=nM)
 end
 
 """Full traced pipeline with an explicit physical output k-grid.
@@ -1139,20 +1272,17 @@ function hmcode_pmm_baryonic_smart(
     pmm_emu::Mapse.TransferFunctionEmulator,
     pcb_emu::Mapse.TransferFunctionEmulator,
     growth_emu::AbstractCosmologicalEmulators.GenericEmulator,
-    cosmo::HMCodeCosmology; N_coarse::Int=20, N_left::Int=12, nM::Int=32)
+    cosmo::HMCodeCosmology; N_coarse::Int=20,
+    N_left::Int=Mapse._baryonic_left_nodes(N_coarse), nM::Int=32,
+    growth_na::Int=64)
     z_coarse = Mapse.build_baryonic_coarse_grid(
         params, z_limits, logT_AGN, N_coarse, N_left)
-    n_z = length(z_coarse)
-    emulator_input = vcat(
-        reshape(z_coarse, 1, n_z),
-        reshape(params, :, 1) .* ones(eltype(z_coarse), 1, n_z),
-    )
-    growth_output = AbstractCosmologicalEmulators.run_emulator(
-        emulator_input, growth_emu)
-    growth = vec(growth_output[6:6, :])
+    growth = _growth_emulator_D(params, z_coarse, growth_emu)
+    growth_tables = _hmcode_dynamic_growth_tables(
+        params, cosmo; na=growth_na)
     return _hmcode_pmm_baryonic_smart_device(
         params, z_fine, z_limits, k_out, logT_AGN, pmm_emu, pcb_emu, cosmo,
-        growth; N_coarse=N_coarse, N_left=N_left, nM=nM)
+        growth, growth_tables; N_coarse=N_coarse, N_left=N_left, nM=nM)
 end
 
 function hmcode_pmm_fast(cosmo::HMCodeCosmology, z_coarse::ReactantVec,
@@ -1193,7 +1323,7 @@ function hmcode_pmm_baryonic_smart(cosmo::HMCodeCosmology, z_fine::ReactantVec,
     z_max = maximum(z_fine; dims=1)
 
     z_feature = predict_baryonic_discontinuity(cosmo; T_AGN=T_AGN)
-    N_left = N_coarse ÷ 2
+    N_left = Mapse._baryonic_left_nodes(N_coarse)
     z_coarse = build_piecewise_coarse_grid(
         vcat(z_min, z_max, z_min .* 0 .+ z_feature),
         N_coarse, N_left)

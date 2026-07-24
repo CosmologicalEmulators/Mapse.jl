@@ -487,8 +487,10 @@ function hmcode_pmm_fast_two_splines(cosmo::HMCodeCosmology,
     pk_nl = hmcode_Pmm(cosmo, z_coarse, k, pk_mm_coarse;
                        pk_cb_z=pk_cb, k_support=k_support, kwargs...)
     pk_t = copy(transpose(pk_nl))
-    left = AbstractCosmologicalEmulators.akima_interpolation(pk_t[1:nleft, :], z_coarse[1:nleft], z_fine)
-    right = AbstractCosmologicalEmulators.akima_interpolation(pk_t[nleft:end, :], z_coarse[nleft:end], z_fine)
+    z_left = min.(z_fine, z_split)
+    z_right = max.(z_fine, z_split)
+    left = AbstractCosmologicalEmulators.akima_interpolation(pk_t[1:nleft, :], z_coarse[1:nleft], z_left)
+    right = AbstractCosmologicalEmulators.akima_interpolation(pk_t[nleft:end, :], z_coarse[nleft:end], z_right)
     return copy(transpose(ifelse.(reshape(z_fine .<= z_split, :, 1), left, right)))
 end
 
@@ -740,7 +742,8 @@ compiled call. The values in `bounds` may be traced and can therefore change at
 every MCMC step.
 """
 function build_piecewise_coarse_grid(bounds::AbstractVector,
-                                     N_coarse::Int, N_left::Int)
+                                     N_coarse::Int, N_left::Int;
+                                     min_spacing::Real=1.0e-4)
     N_left >= 4 || throw(ArgumentError("N_left must be at least 4 for Akima interpolation."))
     N_right = N_coarse - N_left - 1
     N_right >= 4 || throw(ArgumentError("N_right must be at least 4 for Akima interpolation."))
@@ -750,6 +753,10 @@ function build_piecewise_coarse_grid(bounds::AbstractVector,
     z_max = bounds[2:2]
     z_feature = bounds[3:3]
 
+    span = z_max .- z_min
+    margin = max.(z_min .* 0 .+ min_spacing, 0.05 .* span)
+    z_feature = min.(max.(z_feature, z_min .+ margin), z_max .- margin)
+
     T = eltype(bounds)
     left_fraction = T.(collect(0:(N_left - 1))) ./ T(N_left)
     right_fraction = T.(collect(1:N_right)) ./ T(N_right)
@@ -757,6 +764,8 @@ function build_piecewise_coarse_grid(bounds::AbstractVector,
     right = z_feature .+ right_fraction .* (z_max .- z_feature)
     return vcat(left, z_feature, right)
 end
+
+_baryonic_left_nodes(N_coarse::Int) = round(Int, (N_coarse - 1) * 5 / 8)
 
 """
     build_baryonic_coarse_grid(params, z_limits, logT_AGN, N_coarse, N_left)
