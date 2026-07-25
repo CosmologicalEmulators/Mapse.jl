@@ -19,74 +19,122 @@ In order to be able to use `Mapse.jl`, there are two major steps that need to be
 
 In the reminder of this section we are showing how to do this.
 
-### Instantiation
+#### Instantiation
 
-The most direct way to instantiate an official trained emulator is to use the bundled
-artifact-backed cache populated when `Mapse` is imported:
-
-```julia
-Pk_emu = Mapse.trained_emulators[Mapse.DEFAULT_EMULATOR_NAME]
-```
-
-To load an emulator from a local directory instead, use
+The recommended workflow loads each component explicitly using `load_emulator` after resolving the artifact path:
 
 ```julia
-Pk_emu = Mapse.load_emulator(weights_folder)
+# Resolve the artifact directory path
+root = Mapse.artifact_path("mnuw0wacdm_class")
+
+# Load linear total-matter and linear cold+baryon components explicitly
+pmm = Mapse.load_emulator(joinpath(root, "Pk_lin_mm"))
+pcb = Mapse.load_emulator(joinpath(root, "Pk_lin_cb"))
 ```
 
-where `weights_folder` is the path to the folder containing the files required to build up the network.
+To load a single component emulator from a local directory containing `nn_setup.json`, use `load_emulator`:
 
-It is possible to pass an additional argument to the previous function, which is used to choose between the two NN backend now available:
+```julia
+LinearPmm = Mapse.load_emulator(weights_folder)
+```
 
-- [SimpleChains](https://github.com/PumasAI/SimpleChains.jl), which is taylored for small NN running on a CPU
+It is possible to pass an additional argument to `load_emulator`, which is used to choose between the two NN backends now available:
+
+- [SimpleChains](https://github.com/PumasAI/SimpleChains.jl), which is tailored for small NNs running on a CPU (default)
 - [Lux](https://github.com/LuxDL/Lux.jl), which can run both on CPUs and GPUs
 
-`SimpleChains.jl` is faster expecially for small NNs on the CPU. If you wanna use something running on a GPU, you should use `Lux.jl`, which can be loaded adding an additional argument to the `load_emulator` function, `Mapse.LuxEmulator`
+`SimpleChains.jl` is faster especially for small NNs on the CPU. If you want to run on a GPU, you should use `Lux.jl` by passing the `Mapse.LuxEmulator` backend:
 
 ```julia
-Pk_emu = Mapse.load_emulator(weights_folder, emu = Mapse.LuxEmulator)
+LinearPmm = Mapse.load_emulator(weights_folder, emu = Mapse.LuxEmulator)
 ```
 
 Each trained emulator should be shipped with a description within the JSON file. In order to print the description, just run:
 
 ```julia
-Mapse.get_emulator_description(Pk_emu)
+Mapse.get_emulator_description(pmm)
 ```
 
 !!! warning
 
-    Cosmological parameters must be fed to ` Mapse.jl` with **arrays**. It is the user
-    responsability to check the right ordering, by reading the output of the
+    Cosmological parameters must be fed to `Mapse.jl` with **arrays**. It is the user's
+    responsibility to check the right ordering, by reading the output of the
     `get_emulator_description` method.
 
-After loading a trained emulator, feed it cosmological parameters, redshift, and
-the linear growth factor `D(z)` in order to get the emulated nonlinear
-``P_{mm}(k,z)``. The official `mnuw0wacdm_class` emulator expects parameters in
-the order `[ln10As, ns, H0, ωb, ωc, Mν, w0, wa]`.
+### Usage
+
+Use the loaded component emulators to retrieve the linear power spectrum:
 
 ```julia
 params = [3.044, 0.9649, 67.36, 0.02237, 0.12, 0.06, -1.0, 0.0]
 z = 0.0
 D = 1.0
-k = Mapse.get_kgrid(Pk_emu)
-pk_nonlinear = Mapse.get_Pk(params, z, D, Pk_emu)
+
+# Evaluate linear matter power spectrum on its k-grid
+pk_lin = Mapse.get_Pk(params, z, D, pmm)
+k_lin  = Mapse.get_kgrid(pmm)
 ```
 
-`Mapse.get_kgrid(Pk_emu)` returns the output grid of the top-level nonlinear
-emulator. Linear helper methods such as `Mapse.get_linear_Pmm` use their own
-component grid.
+### Nonlinear modeling with Halofit/HMCode
 
-For vector redshifts, pass a vector of matching growth factors, e.g.
-`Mapse.get_Pk(params, [0.0, 1.0], [1.0, 0.6], Pk_emu)`.
+Once you have evaluated the linear power spectrum, you can obtain the nonlinear power spectrum using `Mapse`'s built-in Halofit or HMCode:
+
+```julia
+# Compute nonlinear Pmm using Halofit
+pk_halofit = Mapse.halofit_pmm(params, z, k_lin, pk_lin)
+```
+
+For HMCode, you can load both the total-matter and cold+baryon emulators to get the respective linear spectra, then pass them to HMCode:
+
+```julia
+# Evaluate linear cold+baryon spectrum
+pk_cb_lin = Mapse.get_Pk(params, z, D, pcb)
+
+# Set up background HMCode cosmology
+cosmo = Mapse.HMCodeCosmology(
+    0.3,   # Ωm
+    0.05,  # Ωb
+    0.7,   # h
+    0.96,  # ns
+    0.8,   # σ8
+    -1.0,  # w0
+    0.0,   # wa
+    0.0,   # Ων
+    0.0,   # Ωk
+)
+
+# Compute nonlinear Pmm using HMCode2020
+pk_hmcode = Mapse.hmcode_pmm(cosmo, [z], k_lin, reshape(pk_lin, :, 1); pk_cb_z=reshape(pk_cb_lin, :, 1))
+```
+
+### Background cosmology helpers
+
+The linear growth factor $D(z)$ must be normalized to 1 at $z=0$. You can compute it using the background cosmology functions exported by `Mapse`:
+
+```julia
+# Set up background cosmology parameters
+H0 = 67.36
+h = H0 / 100.0
+ωb = 0.02237
+ωc = 0.12
+Mν = 0.06
+w0 = -1.0
+wa = 0.0
+
+Ωcb0 = (ωb + ωc) / h^2
+
+# Compute D(z) at redshift z
+D = Mapse.D_z(z, Ωcb0, h; mν=Mν, w0=w0, wa=wa)
+```
 
 ### Halofit and Reactant
 
-`Mapse.halofit_Pmm` can compute a Halofit nonlinear total-matter spectrum from a
+`Mapse.halofit_pmm` can compute a Halofit nonlinear total-matter spectrum from a
 linear `Pmm` grid. For Reactant/XLA workflows the background calculation must be
 performed outside the compiled Halofit kernel and passed explicitly:
 
 ```julia
-pk_nl = Mapse.halofit_Pmm(cpar, z, k, pk_lin_mm_z, Ωm_z, Ωv_z)
+pk_nl = Mapse.halofit_pmm(cpar, z, k, pk_lin_mm_z, Ωm_z, Ωv_z)
 ```
 
 Here `Ωm_z` and `Ωv_z` are the matter and dark-energy density fractions at the
@@ -94,6 +142,76 @@ redshifts in `z`. Loading `Reactant` activates `MapseReactantExt`, which provide
 Reactant dispatch for this explicit-background API. The convenience helper
 `Mapse.halofit_background` remains a host-side CLASS-parity background helper and
 should not be called inside `Reactant.@compile`.
+
+### HMCode2020
+
+`Mapse` also includes an embedded HMCode2020 implementation. Given a sampled
+linear matter spectrum, it can return either the nonlinear HMCode spectrum or the
+nonlinear boost:
+
+```julia
+k = exp.(range(log(1e-4), log(50.0), length=100))
+z = [0.0]
+pk_mm_z = reshape(pk_mm_lin, length(k), length(z))
+pk_cb_z = reshape(pk_cb_lin, length(k), length(z))
+
+cosmo = Mapse.HMCodeCosmology(
+    0.3,   # Ωm
+    0.05,  # Ωb
+    0.7,   # h
+    0.96,  # ns
+    0.8,   # σ8
+    -1.0,  # w0
+    0.0,   # wa
+    0.0,   # Ων
+    0.0,   # Ωk
+)
+
+pk_nl = Mapse.hmcode_pmm(cosmo, z, k, pk_mm_z; pk_cb_z=pk_cb_z)
+boost = Mapse.hmcode_boost(cosmo, z, k, pk_mm_z; pk_cb_z=pk_cb_z)
+
+# Or use a wide support grid for HMCode's σ(R) calculations and a smaller
+# output grid for the returned nonlinear spectrum.
+k_support = exp.(range(log(1e-4), log(1e3), length=220))
+k_out = exp.(range(log(1e-4), log(10.0), length=128))
+pk_nl_out = Mapse.hmcode_pmm(cosmo, z, k_out, k_support, pk_mm_support_z;
+                             pk_cb_support_z=pk_cb_support_z)
+```
+
+As for `halofit_Pmm`, spectra have shape `(length(k), length(z))`. `pk_mm_z` is
+the total-matter linear spectrum and sets the returned nonlinear `Pmm`/boost. For
+massive-neutrino cosmologies, pass `pk_cb_z` as the cold+baryon linear spectrum;
+HMCode2020 uses cold+baryon σ(R,z) internally for halo collapse and transition
+parameters. If `pk_cb_z` is omitted, the total spectrum is used for both roles.
+The same input `k` grid is used internally to compute the σ(R,z) integrals, so it
+should cover the linear spectrum over a sufficiently broad range. The default baryonic feedback parameter is `T_AGN = 10^7.8`; pass
+`T_AGN = nothing` to compute the gravity-only HMCode spectrum. Use `nM` to set
+the mass-integration grid directly; the default is `nM=128`.
+
+When `k_support` is supplied, the linear spectra are interpreted on `k_support`,
+but the nonlinear output is returned on `k_out`. This is useful when σ(R,z) needs
+a broad high-k support grid while the downstream application only needs a smaller
+or coarser output grid. `hmcode_boost` divides by the total-matter linear spectrum
+interpolated onto `k_out` in this mode.
+
+With `Reactant` loaded, `hmcode_Pmm` and `hmcode_boost` also dispatch on
+Reactant arrays. For compiled support-grid calls, pass the cold+baryon spectrum
+as a positional argument so it is traced as part of the numerical payload:
+
+```julia
+using Reactant
+
+zR = Reactant.to_rarray(z)
+koutR = Reactant.to_rarray(k_out)
+ksupportR = Reactant.to_rarray(k_support)
+pmmR = Reactant.to_rarray(pk_mm_support_z)
+pcbR = Reactant.to_rarray(pk_cb_support_z)
+
+compiled = Reactant.@compile sync=true Mapse.hmcode_pmm(
+    cosmo, zR, koutR, ksupportR, pmmR, pcbR; nM=128
+)
+pk_nlR = compiled(cosmo, zR, koutR, ksupportR, pmmR, pcbR)
+```
 
 `SimpleChains.jl` and `Lux.jl` have almost the same performance and they give the same result up to floating point precision.
 
