@@ -6,6 +6,9 @@ using Static
 using Mapse
 using DataInterpolations
 
+include("test_aqua.jl")
+include("test_jet.jl")
+
 mlpd = SimpleChain(
   static(6),
   TurboDense(tanh, 64),

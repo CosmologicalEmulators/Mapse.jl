@@ -1,9 +1,11 @@
 [deps]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 Mapse = "8a74af7f-8333-416a-8f03-989ffaa4680e"
 NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
 Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
