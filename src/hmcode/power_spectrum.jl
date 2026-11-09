@@ -3,69 +3,133 @@ using LinearAlgebra
 using Base.Threads
 using Polyester
 using LoopVectorization
-import DataInterpolations
-const DI = DataInterpolations
 
-struct SigmaREval{F}
+struct SigmaREval{F,Tz}
     sigma_R::F
-    z::Float64
+    z::Tz
     iz::Int
 end
-@inline (s::SigmaREval)(R::Float64) = s.sigma_R(R, s.z)
+@inline (s::SigmaREval)(R::Real) = s.sigma_R(R, s.z)
 
-struct PkLinEval{F}
+struct PkLinEval{F,Tz}
     Pk_lin::F
-    z::Float64
+    z::Tz
     iz::Int
 end
-@inline (s::PkLinEval)(k::Float64) = s.Pk_lin(k, s.z)
+@inline (s::PkLinEval)(k::Real) = s.Pk_lin(k, s.z)
 
 _eval_sigma(f, R, z, iz) = f(R, z)
 _eval_pk(f, k, z, iz) = f(k, z)
 
-const ND_HMCODE = 2.853
+@inline _hmcode_matter_density(omega_m::Float64) =
+    comoving_matter_density(omega_m)
+@inline _hmcode_matter_density(omega_m::Real) = rho_critical * omega_m
 
-struct HMcodeParams
-    sigma_v::Vector{Float64}
-    Delta_v::Vector{Float64}
-    delta_c::Vector{Float64}
-    eta::Vector{Float64}
-    A::Vector{Float64}
-    f_damp::Vector{Float64}
-    k_star::Vector{Float64}
-    B::Vector{Float64}
-    k_damp::Vector{Float64}
+@inline _hmcode_lagrangian_radius(M::Float64, omega_m::Float64) =
+    Lagrangian_radius(M, omega_m)
+@inline _hmcode_lagrangian_radius(M::Real, omega_m::Real) =
+    cbrt(3.0 * M / (4.0 * pi * _hmcode_matter_density(omega_m)))
+
+@inline _hmcode_redshift_from_scalefactor(a::Float64) =
+    redshift_from_scalefactor(a)
+@inline _hmcode_redshift_from_scalefactor(a::Real) = -1.0 + 1.0 / a
+
+@inline _hmcode_feedback_parameters(T_AGN::Float64) =
+    get_feedback_parameters(T_AGN)
+@inline function _hmcode_feedback_parameters(T_AGN::Real)
+    theta = log10(T_AGN / 10.0^7.8)
+    return (
+        B0 = 3.44 - 0.496 * theta,
+        Bz = -0.0671 - 0.0371 * theta,
+        Mb0 = 10.0^(13.87 + 1.81 * theta),
+        Mbz = -0.108 + 0.195 * theta,
+        f0 = (2.01 - 0.3 * theta) * 1.0e-2,
+        fz = 0.409 + 0.0224 * theta,
+    )
 end
 
-mutable struct HMcodeWorkspace
-    M::Vector{Float64}
-    R::Vector{Float64}
-    k::Vector{Float64}
-    zs::Vector{Float64}
-    growth_itp::Any
-    growth_LCDM_itp::Any
-    params_tweaks::HMcodeParams
-    params_notweaks::HMcodeParams
-    nu_mat::Matrix{Float64}
-    Pk_lin_mat::Matrix{Float64}
-    Pk_wig_mat::Matrix{Float64}
-    Ptmp1::Matrix{Float64}
-    Ptmp2::Matrix{Float64}
-    w1h_mat::Matrix{Float64}
-    w1h_mat_fb::Matrix{Float64}
-    rv::Matrix{Float64}
-    cc::Matrix{Float64}
-    ln1pc::Matrix{Float64}
-    zf_mat::Matrix{Float64}
-    Mb_vec::Vector{Float64}
-    fstar_vec::Vector{Float64}
-    W_buf::Vector{Matrix{Float64}}
-    W2_buf::Vector{Matrix{Float64}}
-    I1h_buf::Vector{Vector{Float64}}
-    Pk1h_buf::Vector{Vector{Float64}}
-    rv_eff_buf::Vector{Vector{Float64}}
-    gcol_buf::Vector{Vector{Float64}}
-    wtcol_buf::Vector{Vector{Float64}}
+@inline _hmcode_dc_mead(
+    a::Float64, omega_m::Float64, f_nu::Float64,
+    growth::Float64, accumulated_growth::Float64,
+) = dc_Mead(a, omega_m, f_nu, growth, accumulated_growth)
+
+@inline function _hmcode_dc_mead(
+    a::Real, omega_m::Real, f_nu::Real,
+    growth::Real, accumulated_growth::Real,
+)
+    f_mead(x, y, p0, p1, p2, p3) =
+        p0 + p1 * (1.0 - x) + p2 * (1.0 - x)^2 + p3 * (1.0 - y)
+    dc = 1.0
+    dc += f_mead(growth / a, accumulated_growth / a,
+                 -0.0069, -0.0208, 0.0312, 0.0021) * log10(omega_m)
+    dc += f_mead(growth / a, accumulated_growth / a,
+                 0.0001, -0.0647, -0.0417, 0.0646)
+    return dc * dc0 * (1.0 - 0.041 * f_nu)
+end
+
+@inline _hmcode_dv_mead(
+    a::Float64, omega_m::Float64, f_nu::Float64,
+    growth::Float64, accumulated_growth::Float64,
+) = Dv_Mead(a, omega_m, f_nu, growth, accumulated_growth)
+
+@inline function _hmcode_dv_mead(
+    a::Real, omega_m::Real, f_nu::Real,
+    growth::Real, accumulated_growth::Real,
+)
+    f_mead(x, y, p0, p1, p2, p3) =
+        p0 + p1 * (1.0 - x) + p2 * (1.0 - x)^2 + p3 * (1.0 - y)
+    log_omega_m = log10(omega_m)
+    delta_v = 1.0
+    delta_v += f_mead(growth / a, accumulated_growth / a,
+                      -0.79, -10.17, 2.51, 6.51) * log_omega_m
+    delta_v += f_mead(growth / a, accumulated_growth / a,
+                      -1.89, 0.38, 18.8, -15.87) * log_omega_m^2
+    return delta_v * Dv0 * (1.0 + 0.763 * f_nu)
+end
+
+const ND_HMCODE = 2.853
+
+struct HMcodeParams{T}
+    sigma_v::Vector{T}
+    Delta_v::Vector{T}
+    delta_c::Vector{T}
+    eta::Vector{T}
+    A::Vector{T}
+    f_damp::Vector{T}
+    k_star::Vector{T}
+    B::Vector{T}
+    k_damp::Vector{T}
+end
+
+mutable struct HMcodeWorkspace{T,Tz,G,GL,P<:HMcodeParams{T}}
+    M::Vector{T}
+    R::Vector{T}
+    k::Vector{T}
+    zs::Vector{Tz}
+    growth_itp::G
+    growth_LCDM_itp::GL
+    params_tweaks::P
+    params_notweaks::P
+    nu_mat::Matrix{T}
+    Pk_lin_mat::Matrix{T}
+    Pk_wig_mat::Matrix{T}
+    Ptmp1::Matrix{T}
+    Ptmp2::Matrix{T}
+    w1h_mat::Matrix{T}
+    w1h_mat_fb::Matrix{T}
+    rv::Matrix{T}
+    cc::Matrix{T}
+    ln1pc::Matrix{T}
+    zf_mat::Matrix{T}
+    Mb_vec::Vector{T}
+    fstar_vec::Vector{T}
+    W_buf::Vector{Matrix{T}}
+    W2_buf::Vector{Matrix{T}}
+    I1h_buf::Vector{Vector{T}}
+    Pk1h_buf::Vector{Vector{T}}
+    rv_eff_buf::Vector{Vector{T}}
+    gcol_buf::Vector{Vector{T}}
+    wtcol_buf::Vector{Vector{T}}
 end
 
 function compute_weights_inplace!(w1h_mat, M, nu_mat, amp, gcol, wtcol)
@@ -90,21 +154,30 @@ end
 
 function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nthreads=Threads.maxthreadid(), k_support=nothing)
     nk, nz, nM = length(k), length(zs), length(M_grid)
-    M = collect(Float64.(M_grid))
-    R = Lagrangian_radius(M, cosmo.Omega_m)
+    T = promote_type(
+        eltype(k), eltype(zs), eltype(M_grid),
+        typeof(cosmo.Omega_m), typeof(cosmo.Omega_b), typeof(cosmo.h),
+        typeof(cosmo.n_s), typeof(cosmo.sigma_8), typeof(cosmo.w0),
+        typeof(cosmo.wa), typeof(cosmo.Omega_nu), typeof(cosmo.Omega_k),
+    )
+    M = collect(T.(M_grid))
+    R = _hmcode_lagrangian_radius.(M, Ref(cosmo.Omega_m))
     sigma_fast, Pk_fast = sigma_R_interp, Pk_lin_interp
     growth_itp = get_growth_interpolator(cosmo, LCDM=false)
     growth_LCDM_itp = get_growth_interpolator(cosmo, LCDM=true)
     a_grid_inv = range(1e-4, 1.0, length=2000) |> collect
     g_grid_inv = growth_itp.(a_grid_inv)
-    growth_itp_inverse = DI.LinearInterpolation(a_grid_inv, g_grid_inv)
-    Sigma = zeros(nM, nz)
+    # Knots are active growth values. Use the existing gridded linear API,
+    # whose reverse path retains knot cotangents. Exact interior knots use
+    # the left interval; outside-support queries still throw.
+    growth_itp_inverse = Interpolations.linear_interpolation(g_grid_inv, a_grid_inv)
+    Sigma = zeros(T, nM, nz)
     for iz in 1:nz, iM in 1:nM; Sigma[iM, iz] = _eval_sigma(sigma_fast, R[iM], zs[iz], iz); end
-    Pk_lin_mat = zeros(nk, nz)
+    Pk_lin_mat = zeros(T, nk, nz)
     for iz in 1:nz, ik in 1:nk; Pk_lin_mat[ik, iz] = _eval_pk(Pk_fast, k[ik], zs[iz], iz); end
     params_tweaks = compute_hmcode_params(k, zs, Pk_fast, sigma_fast, Sigma, R, cosmo, growth_itp; tweaks=true, k_support=k_support)
     params_notweaks = _hmcode_notweaks_params(params_tweaks)
-    nu_mat = zeros(nM, nz)
+    nu_mat = zeros(T, nM, nz)
     for iz in 1:nz; @views nu_mat[:, iz] .= params_tweaks.delta_c[iz] ./ Sigma[:, iz]; end
 
     # BAO dewiggling must use the validated log-uniform support grid.
@@ -113,7 +186,7 @@ function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nt
     # interpolate to k_out using log-log interpolation.  Using k_out directly
     # would give a physically wrong smoothing width for irregular or
     # differently-strided output grids.
-    Pk_wig_mat = zeros(nk, nz)
+    Pk_wig_mat = zeros(T, nk, nz)
     om, ob = cosmo.Omega_m*cosmo.h^2, cosmo.Omega_b*cosmo.h^2
     if k_support === nothing
         # No separate support grid: k_out = k_support, compute directly.
@@ -123,15 +196,15 @@ function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nt
     else
         # Support grid available: compute wiggle on support grid, then
         # interpolate (log-log) each column to the output grid k.
-        k_sup = collect(Float64.(k_support))
+        k_sup = collect(T.(k_support))
         nk_sup = length(k_sup)
-        logk_out = log.(collect(Float64.(k)))
+        logk_out = log.(collect(T.(k)))
         logk_sup = log.(k_sup)
-        Pk_sup_mat = zeros(nk_sup, nz)
+        Pk_sup_mat = zeros(T, nk_sup, nz)
         for iz in 1:nz, ik in 1:nk_sup
             Pk_sup_mat[ik, iz] = _eval_pk(Pk_fast, k_sup[ik], zs[iz], iz)
         end
-        Pk_wig_sup = zeros(nk_sup, nz)
+        Pk_wig_sup = zeros(T, nk_sup, nz)
         for iz in 1:nz
             Pk_wig_sup[:, iz] .= get_Pk_wiggle(k_sup, view(Pk_sup_mat, :, iz), cosmo.h, om, ob, cosmo.n_s)
         end
@@ -151,27 +224,47 @@ function HMcodeWorkspace(k, zs, M_grid, cosmo, sigma_R_interp, Pk_lin_interp; nt
         end
     end
 
-    rhom = comoving_matter_density(cosmo.Omega_m)
+    rhom = _hmcode_matter_density(cosmo.Omega_m)
     amp_no = M .* (1.0 - cosmo.Omega_nu/cosmo.Omega_m) ./ rhom
-    w1h_mat = Matrix{Float64}(undef, nM, nz)
-    compute_weights_inplace!(w1h_mat, M, nu_mat, amp_no, zeros(nM), zeros(nM))
+    w1h_mat = Matrix{T}(undef, nM, nz)
+    compute_weights_inplace!(w1h_mat, M, nu_mat, amp_no, zeros(T, nM), zeros(T, nM))
     
-    zf_mat = zeros(nM, nz)
+    zf_mat = zeros(T, nM, nz)
     for iz in 1:nz
         compute_collapse_redshifts_fast!(view(zf_mat, :, iz), M, zs[iz], params_tweaks.delta_c[iz], cosmo.Omega_m, growth_itp, growth_itp_inverse, SigmaREval(sigma_fast, zs[iz], iz))
     end
     
-    return HMcodeWorkspace(M, R, collect(Float64.(k)), collect(Float64.(zs)), growth_itp, growth_LCDM_itp, params_tweaks, params_notweaks, nu_mat, Pk_lin_mat, Pk_wig_mat, zeros(nk, nz), zeros(nk, nz), w1h_mat, zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zeros(nM, nz), zf_mat, zeros(nz), zeros(nz), [zeros(nM, nk) for _ in 1:nthreads], [zeros(nM, nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nk) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads], [zeros(nM) for _ in 1:nthreads])
+    return HMcodeWorkspace(
+        M, R, collect(T.(k)), collect(zs), growth_itp, growth_LCDM_itp,
+        params_tweaks, params_notweaks, nu_mat, Pk_lin_mat, Pk_wig_mat,
+        zeros(T, nk, nz), zeros(T, nk, nz), w1h_mat,
+        zeros(T, nM, nz), zeros(T, nM, nz), zeros(T, nM, nz),
+        zeros(T, nM, nz), zf_mat, zeros(T, nz), zeros(T, nz),
+        [zeros(T, nM, nk) for _ in 1:nthreads],
+        [zeros(T, nM, nk) for _ in 1:nthreads],
+        [zeros(T, nk) for _ in 1:nthreads],
+        [zeros(T, nk) for _ in 1:nthreads],
+        [zeros(T, nM) for _ in 1:nthreads],
+        [zeros(T, nM) for _ in 1:nthreads],
+        [zeros(T, nM) for _ in 1:nthreads],
+    )
 end
 
 function compute_hmcode_params(k, zs, Pk_lin, sigma_R, sigma_grid, R_grid, cosmo, growth_itp; tweaks=true, k_support=nothing)
     nz = length(zs); Om_m = cosmo.Omega_m; f_nu = cosmo.Omega_nu/Om_m
-    R_nl, n_eff, sigma_v, Delta_v, delta_c, eta, A, f_damp, k_star, B, k_damp = (zeros(nz) for _ in 1:11)
+    T = promote_type(
+        eltype(k), eltype(sigma_grid), eltype(R_grid),
+        typeof(cosmo.Omega_m), typeof(cosmo.Omega_b), typeof(cosmo.h),
+        typeof(cosmo.n_s), typeof(cosmo.sigma_8), typeof(cosmo.w0),
+        typeof(cosmo.wa), typeof(cosmo.Omega_nu), typeof(cosmo.Omega_k),
+    )
+    R_nl, n_eff, sigma_v, Delta_v, delta_c, eta, A, f_damp, k_star, B, k_damp =
+        (zeros(T, nz) for _ in 1:11)
     kmin = k_support === nothing ? k[1] : k_support[1]
     kmax = k_support === nothing ? k[end] : k_support[end]
     @inbounds for iz in 1:nz
         z = zs[iz]; a = scalefactor_from_redshift(z); Om_mz = _Omega_m_a(a, cosmo, LCDM=false)
-        g = growth_itp(a); G = get_accumulated_growth(a, growth_itp); dc = dc_Mead(a, Om_mz, f_nu, g, G); Dv = Dv_Mead(a, Om_mz, f_nu, g, G)
+        g = growth_itp(a); G = get_accumulated_growth(a, growth_itp); dc = _hmcode_dc_mead(a, Om_mz, f_nu, g, G); Dv = _hmcode_dv_mead(a, Om_mz, f_nu, g, G)
         delta_c[iz], Delta_v[iz] = dc, Dv; Rnl = get_nonlinear_radius(R_grid[1], R_grid[end], dc, SigmaREval(sigma_R, z, iz)); s8 = _eval_sigma(sigma_R, 8.0, z, iz); sv = sigmaV(0.0, PkLinEval(Pk_lin, z, iz); kmin=kmin, kmax=kmax); neff = get_effective_index(Rnl, R_grid, view(sigma_grid, :, iz))
         R_nl[iz], sigma_v[iz], n_eff[iz], k_star[iz] = Rnl, sv, neff, 0.05618 * s8^(-1.013)
         if tweaks
@@ -196,25 +289,29 @@ must retain the HMCode-2020 `k_star` quartic one-halo cutoff. See CAMB PR #136.
 """
 function _hmcode_notweaks_params(params::HMcodeParams)
     nz = length(params.k_star)
+    T = eltype(params.k_star)
     return HMcodeParams(
         params.sigma_v,
         params.Delta_v,
         params.delta_c,
-        zeros(nz),             # eta
-        ones(nz),              # alpha/A
-        zeros(nz),             # f_damp
+        zeros(T, nz),          # eta
+        ones(T, nz),           # alpha/A
+        zeros(T, nz),          # f_damp
         copy(params.k_star),    # REQUIRED: CAMB PR #136 low-k response fix
-        fill(4.0, nz),          # concentration amplitude B
-        zeros(nz),             # k_damp
+        fill(one(params.k_star[1]) * 4.0, nz), # concentration amplitude B
+        zeros(T, nz),          # k_damp
     )
 end
 
 function compute_collapse_redshifts_fast!(zf_out, M_grid, z, dc, Om_m, growth_itp, growth_itp_inverse, sigmaR_func; gamma=0.01)
     g_obs = growth_itp(scalefactor_from_redshift(z))
     @inbounds for iM in eachindex(M_grid)
-        sigma = sigmaR_func(Lagrangian_radius(gamma*M_grid[iM], Om_m))
+        sigma = sigmaR_func(_hmcode_lagrangian_radius(gamma*M_grid[iM], Om_m))
         g_target = g_obs * dc / sigma
-        zf_out[iM] = (g_target >= g_obs) ? z : redshift_from_scalefactor(growth_itp_inverse(g_target))
+        # Convert on each branch, as storing into zf_out already does. Keeping
+        # the branch result concrete also supports mixed-precision fixed z grids.
+        zf_out[iM] = (g_target >= g_obs) ? convert(eltype(zf_out), z) :
+            convert(eltype(zf_out), _hmcode_redshift_from_scalefactor(growth_itp_inverse(g_target)))
     end
     return zf_out
 end
@@ -222,7 +319,7 @@ end
 function apply_baryonic_transform!(Wbuf, M, Mb, fstar, Om_m, Om_c, Om_b)
     nM, nk = size(Wbuf)
     # Applying @turbo to the nested loop
-    @turbo for iM in 1:nM
+    @turbo warn_check_args=false for iM in 1:nM
         fg = (Om_b/Om_m - fstar) * (M[iM]/Mb)^2 / (1.0 + (M[iM]/Mb)^2)
         coeff = Om_c/Om_m + fg
         for ik in 1:nk
@@ -232,24 +329,30 @@ function apply_baryonic_transform!(Wbuf, M, Mb, fstar, Om_m, Om_c, Om_b)
     return Wbuf
 end
 
-function _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, nu_iz, w1h_iz, rv_iz, rv_eff_tmp, c_iz, ln1pc_iz, Mb, fstar, Om_m, Om_c, Om_b, Wbuf, W2buf, I1h, Pk1h; use_fast_specials=true)
-    nk, nM = length(k), length(ws.M); η = hmpars.eta[iz]
-    @inbounds for iM in 1:nM; rv_eff_tmp[iM] = rv_iz[iM] * (nu_iz[iM]^η); end
-    if use_fast_specials; win_NFW_fast!(Wbuf, k, rv_eff_tmp, c_iz, ln1pc_iz); else; for ik in 1:nk, iM in 1:nM; Wbuf[iM, ik] = wnfw_xc(k[ik]*rv_eff_tmp[iM], c_iz[iM]); end; end
-    if (T_AGN !== nothing) && (!tweaks); apply_baryonic_transform!(Wbuf, ws.M, Mb, fstar, Om_m, Om_c, Om_b); end
-    @turbo for ik in 1:nk, iM in 1:nM
+# A boundary for the analytical reverse rule; preserve the optimized primal
+# loops rather than differentiating LoopVectorization's LLVM intrinsics.
+Base.@noinline function _one_halo_integral!(I1h, W2buf, Wbuf, w1h_iz, rhom)
+    nM, nk = size(Wbuf)
+    @turbo warn_check_args=false for ik in 1:nk, iM in 1:nM
         wv = Wbuf[iM, ik]
         W2buf[iM, ik] = wv * wv
     end
-    # mul!(I1h, transpose(W2buf), w1h_iz); @. I1h = I1h * rhom
-    # Manual loop for I1h to avoid potential mul!/transpose issues
-    @turbo for ik in 1:nk
+    @turbo warn_check_args=false for ik in 1:nk
         val = 0.0
         for iM in 1:nM
             val += W2buf[iM, ik] * w1h_iz[iM]
         end
         I1h[ik] = val * rhom
     end
+    return I1h
+end
+
+function _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, nu_iz, w1h_iz, rv_iz, rv_eff_tmp, c_iz, ln1pc_iz, Mb, fstar, Om_m, Om_c, Om_b, Wbuf, W2buf, I1h, Pk1h; use_fast_specials=true)
+    nk, nM = length(k), length(ws.M); η = hmpars.eta[iz]
+    @inbounds for iM in 1:nM; rv_eff_tmp[iM] = rv_iz[iM] * (nu_iz[iM]^η); end
+    if use_fast_specials; win_NFW_fast!(Wbuf, k, rv_eff_tmp, c_iz, ln1pc_iz); else; for ik in 1:nk, iM in 1:nM; Wbuf[iM, ik] = wnfw_xc(k[ik]*rv_eff_tmp[iM], c_iz[iM]); end; end
+    if (T_AGN !== nothing) && (!tweaks); apply_baryonic_transform!(Wbuf, ws.M, Mb, fstar, Om_m, Om_c, Om_b); end
+    _one_halo_integral!(I1h, W2buf, Wbuf, w1h_iz, rhom)
     ks = hmpars.k_star[iz]
     safe_ks = ks > 0.0 ? ks : 1.0
     @inbounds @fastmath for ik in 1:nk
@@ -279,11 +382,60 @@ function _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, nu_iz,
     return nothing
 end
 
+# Logical chunks own buffers independently of the task/thread executing them.
+# The serial chunk body can be differentiated without tracing the scheduler.
+function _assemble_slice_chunk!(Pk_out, k, zs, ws, hmpars, rhom, tweaks,
+        T_AGN, w1h_ptr, Om_m, Om_c, Om_b, use_fast_specials, chunk, nchunks)
+    buffers = (W_buf=ws.W_buf[chunk], W2_buf=ws.W2_buf[chunk],
+               I1h_buf=ws.I1h_buf[chunk], Pk1h_buf=ws.Pk1h_buf[chunk],
+               rv_eff_buf=ws.rv_eff_buf[chunk])
+    return _assemble_owned_slice_chunk!(Pk_out, k, zs, ws, hmpars, rhom,
+        tweaks, T_AGN, w1h_ptr, Om_m, Om_c, Om_b, use_fast_specials,
+        buffers, chunk, nchunks)
+end
+
+# The owned buffers are separate from read-only workspace inputs so reverse
+# workers need not allocate cotangents for other chunks or unused model state.
+function _assemble_owned_slice_chunk!(Pk_out, k, zs, ws, hmpars, rhom, tweaks,
+        T_AGN, w1h_ptr, Om_m, Om_c, Om_b, use_fast_specials, buffers, chunk, nchunks)
+    first_z = fld((chunk - 1) * length(zs), nchunks) + 1
+    last_z = fld(chunk * length(zs), nchunks)
+    for iz in first_z:last_z
+        _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN,
+            view(ws.nu_mat, :, iz), view(w1h_ptr, :, iz), view(ws.rv, :, iz),
+            buffers.rv_eff_buf, view(ws.cc, :, iz), view(ws.ln1pc, :, iz),
+            ws.Mb_vec[iz], ws.fstar_vec[iz], Om_m, Om_c, Om_b,
+            buffers.W_buf, buffers.W2_buf, buffers.I1h_buf,
+            buffers.Pk1h_buf; use_fast_specials=use_fast_specials)
+    end
+    return nothing
+end
+
+function _assembly_chunk_count(zs, ws)
+    isempty(zs) && return 0
+    n = min(length(zs), Threads.nthreads(), length(ws.W_buf))
+    n > 0 || throw(ArgumentError("Threaded assembly requires scratch buffers"))
+    all(length(b) >= n for b in (ws.W2_buf, ws.I1h_buf, ws.Pk1h_buf, ws.rv_eff_buf)) ||
+        throw(ArgumentError("Threaded assembly scratch buffer counts do not match"))
+    return n
+end
+
+# Keep Polyester's llvmcall machinery outside the serial method's IR.
+Base.@noinline function _assemble_threaded_slices!(Pk_out, k, zs, ws, hmpars,
+        rhom, tweaks, T_AGN, w1h_ptr, Om_m, Om_c, Om_b, use_fast_specials)
+    nchunks = _assembly_chunk_count(zs, ws)
+    @batch for chunk in 1:nchunks
+        _assemble_slice_chunk!(Pk_out, k, zs, ws, hmpars, rhom, tweaks,
+            T_AGN, w1h_ptr, Om_m, Om_c, Om_b, use_fast_specials, chunk, nchunks)
+    end
+    return nothing
+end
+
 function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=true, threaded=false, use_fast_specials=true, hmpars=tweaks ? ws.params_tweaks : ws.params_notweaks)
     nz, nM = length(zs), length(ws.M); Om_m, Om_b, Om_nu = cosmo.Omega_m, cosmo.Omega_b, cosmo.Omega_nu
-    Om_c, rhom = Om_m - Om_b - Om_nu, comoving_matter_density(Om_m)
+    Om_c, rhom = Om_m - Om_b - Om_nu, _hmcode_matter_density(Om_m)
     zc = 10.0; ac = scalefactor_from_redshift(zc); growth, growth_LCDM = ws.growth_itp, ws.growth_LCDM_itp
-    feedback_params = (T_AGN === nothing) ? (B0=0.0, Bz=0.0, Mb0=0.0, Mbz=0.0, f0=0.0, fz=0.0) : get_feedback_parameters(T_AGN)
+    feedback_params = (T_AGN === nothing) ? (B0=0.0, Bz=0.0, Mb0=0.0, Mbz=0.0, f0=0.0, fz=0.0) : _hmcode_feedback_parameters(T_AGN)
     w1h_ptr = ws.w1h_mat
     if (T_AGN !== nothing && !tweaks)
         amp_fb = ws.M ./ rhom; compute_weights_inplace!(ws.w1h_mat_fb, ws.M, ws.nu_mat, amp_fb, ws.gcol_buf[1], ws.wtcol_buf[1]); w1h_ptr = ws.w1h_mat_fb
@@ -310,9 +462,8 @@ function hmcode_power_single!(Pk_out, k, zs, cosmo, ws; T_AGN=nothing, tweaks=tr
         end
     end
     if threaded
-        @batch for iz in 1:nz
-            tid = threadid(); _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, view(ws.nu_mat, :, iz), view(w1h_ptr, :, iz), view(ws.rv, :, iz), ws.rv_eff_buf[tid], view(ws.cc, :, iz), view(ws.ln1pc, :, iz), ws.Mb_vec[iz], ws.fstar_vec[iz], Om_m, Om_c, Om_b, ws.W_buf[tid], ws.W2_buf[tid], ws.I1h_buf[tid], ws.Pk1h_buf[tid]; use_fast_specials=use_fast_specials)
-        end
+        _assemble_threaded_slices!(Pk_out, k, zs, ws, hmpars, rhom, tweaks,
+            T_AGN, w1h_ptr, Om_m, Om_c, Om_b, use_fast_specials)
     else
         for iz in 1:nz; _assemble_slice!(Pk_out, iz, k, ws, hmpars, rhom, tweaks, T_AGN, view(ws.nu_mat, :, iz), view(w1h_ptr, :, iz), view(ws.rv, :, iz), ws.rv_eff_buf[1], view(ws.cc, :, iz), view(ws.ln1pc, :, iz), ws.Mb_vec[iz], ws.fstar_vec[iz], Om_m, Om_c, Om_b, ws.W_buf[1], ws.W2_buf[1], ws.I1h_buf[1], ws.Pk1h_buf[1]; use_fast_specials=use_fast_specials); end
     end
@@ -333,9 +484,18 @@ end
 
 function hmcode_power(k, zs, Pk_lin, sigma_R, cosmo; T_AGN=10^7.8, Mmin=1e0, Mmax=1e18, nM=128, threaded=false, use_fast_specials=true, k_support=nothing)
     nM >= 2 || throw(ArgumentError("HMCode nM must be at least 2."))
-    M = exp.(range(log(Mmin), log(Mmax), length=nM))
-    ws = HMcodeWorkspace(collect(Float64.(k)), collect(Float64.(zs)), M, cosmo, sigma_R, Pk_lin; nthreads=Threads.maxthreadid(), k_support=k_support)
-    Pk_out = zeros(length(k), length(zs))
+    feedback_type = T_AGN === nothing ? Float64 : typeof(T_AGN)
+    T = promote_type(
+        eltype(k), eltype(zs), feedback_type,
+        typeof(cosmo.Omega_m), typeof(cosmo.Omega_b), typeof(cosmo.h),
+        typeof(cosmo.n_s), typeof(cosmo.sigma_8), typeof(cosmo.w0),
+        typeof(cosmo.wa), typeof(cosmo.Omega_nu), typeof(cosmo.Omega_k),
+    )
+    M = T.(exp.(range(log(Mmin), log(Mmax), length=nM)))
+    ws = HMcodeWorkspace(
+        collect(T.(k)), collect(zs), M, cosmo, sigma_R, Pk_lin;
+        nthreads=Threads.maxthreadid(), k_support=k_support)
+    Pk_out = zeros(T, length(k), length(zs))
     hmcode_power!(Pk_out, ws.k, ws.zs, cosmo, ws; T_AGN=T_AGN, threaded=threaded, use_fast_specials=use_fast_specials)
     return Pk_out
 end

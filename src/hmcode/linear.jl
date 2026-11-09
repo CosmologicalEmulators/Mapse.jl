@@ -105,14 +105,18 @@ function sigmaV(
     kmin::Real = 0.0,
     kmax::Real = Inf,
 )
+    sigmaV_squared = _sigmaV_integral(R, Pk, kmin, kmax)
+    return sqrt(sigmaV_squared / (2.0 * pi^2)) / sqrt(3.0)
+end
+
+function _sigmaV_integral(R::Real, Pk, kmin::Real, kmax::Real)
     integrand = if R == 0
         k -> Pk(k)
     else
         k -> Pk(k) * _Tophat_k(k * R)^2
     end
     prob = IntegralProblem((u, p) -> integrand(u), (float(kmin), float(kmax)))
-    sigmaV_squared = solve(prob, QuadGKJL(), reltol=1e-3).u
-    return sqrt(sigmaV_squared / (2.0 * pi^2)) / sqrt(3.0)
+    return solve(prob, QuadGKJL(), reltol=1e-3).u
 end
 
 # ------------------------------------------------------------
@@ -135,15 +139,16 @@ end
 
 """Simple Gaussian 1D filter with reflect boundaries."""
 function gaussian_filter1d(y::AbstractVector, sigma::Real; truncate::Real = 4.0)
+    T = promote_type(eltype(y), typeof(sigma))
     lw = Int(trunc(truncate * sigma + 0.5))
-    lw == 0 && return collect(Float64.(y))
+    lw == 0 && return collect(T.(y))
 
     x = -lw:lw
     weights = exp.(-0.5 .* (x ./ sigma).^2)
     weights ./= sum(weights)
 
     n = length(y)
-    out = zeros(Float64, n)
+    out = zeros(T, n)
     @inbounds for i in 1:n
         for j in -lw:lw
             idx = _reflect_index(i + j, n)

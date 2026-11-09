@@ -26,7 +26,7 @@ Lagrangian_radius(M::Float64, Om_m::Float64) = cbrt(3.0 * M / (4.0 * pi * comovi
 Lagrangian_radius(M::AbstractArray, Om_m::Float64) = Lagrangian_radius.(M, Om_m)
 
 redshift_from_scalefactor(a::Float64) = -1.0 + 1.0 / a
-scalefactor_from_redshift(z::Float64) = 1.0 / (1.0 + z)
+scalefactor_from_redshift(z::Real) = 1.0 / (1.0 + z)
 
 function _f_Mead(x::Float64, y::Float64, p0::Float64, p1::Float64, p2::Float64, p3::Float64)
     return p0 + p1*(1.0 - x) + p2*(1.0 - x)^2 + p3*(1.0 - y)
@@ -52,56 +52,71 @@ function Dv_Mead(a::Float64, Om_m::Float64, f_nu::Float64, g::Float64, G::Float6
     return Dv * Dv0 * (1.0 + 0.763 * f_nu)
 end
 
-function _w(a::Float64, cosmo::HMcodeCosmology; LCDM::Bool=false)
+function _w(a::Real, cosmo; LCDM::Bool=false)
     w0, wa = LCDM ? (-1.0, 0.0) : (cosmo.w0, cosmo.wa)
     return w0 + (1.0 - a) * wa
 end
 
-function _X_w(a::Float64, cosmo::HMcodeCosmology; LCDM::Bool=false)
+function _X_w(a::Real, cosmo; LCDM::Bool=false)
     w0, wa = LCDM ? (-1.0, 0.0) : (cosmo.w0, cosmo.wa)
     return a^(-3.0 * (1.0 + w0 + wa)) * exp(-3.0 * wa * (1.0 - a))
 end
 
-function _Hubble2(a::Float64, cosmo::HMcodeCosmology; LCDM::Bool=false)
+function _Hubble2(a::Real, cosmo; LCDM::Bool=false)
     Om_w = LCDM ? (1.0 - cosmo.Omega_m) : (1.0 - cosmo.Omega_m - cosmo.Omega_k)
     Om = LCDM ? 1.0 : (1.0 - cosmo.Omega_k)
     return cosmo.Omega_m * a^-3 + Om_w * _X_w(a, cosmo, LCDM=LCDM) + (1.0 - Om) * a^-2
 end
 
-function _Omega_m_a(a::Float64, cosmo::HMcodeCosmology; LCDM::Bool=false)
+function _Omega_m_a(a::Real, cosmo; LCDM::Bool=false)
     return cosmo.Omega_m * a^-3 / _Hubble2(a, cosmo, LCDM=LCDM)
 end
 
-function _AH(a::Float64, cosmo::HMcodeCosmology; LCDM::Bool=false)
+function _AH(a::Real, cosmo; LCDM::Bool=false)
     Om_w = LCDM ? (1.0 - cosmo.Omega_m) : (1.0 - cosmo.Omega_m - cosmo.Omega_k)
     return -0.5 * (cosmo.Omega_m * a^-3 + (1.0 + 3.0 * _w(a, cosmo, LCDM=LCDM)) * Om_w * _X_w(a, cosmo, LCDM=LCDM))
 end
 
 function get_growth_interpolator(cosmo::HMcodeCosmology; LCDM::Bool=false)
+    # SciML promotes the ODE state for dual-valued parameters, even unused
+    # ones. Pass only the background parameters used by this growth equation:
+    # seeding h (or another inactive field) must not change the integration.
+    background = (
+        Omega_m=cosmo.Omega_m,
+        Omega_k=LCDM ? 0.0 : cosmo.Omega_k,
+        w0=LCDM ? -1.0 : cosmo.w0,
+        wa=LCDM ? 0.0 : cosmo.wa,
+    )
+    a_vals = range(1e-4, 1.0, length=129)
+    g_vals = _growth_values(background, LCDM)
+    itp = scale(interpolate(g_vals, BSpline(Cubic(Line(OnGrid())))), a_vals)
+    return extrapolate(itp, Line())
+end
+
+# Keep the adaptive solve separate from spline construction so its four-input
+# sensitivity can be contracted with the reverse cotangent of the growth table.
+function _growth_values(background, LCDM::Bool)
     a_init = 1e-4
     na = 129
     a_vals = range(a_init, 1.0, length=na)
-    f_init = 1.0 - _Omega_m_a(a_init, cosmo, LCDM=LCDM)
+    f_init = 1.0 - _Omega_m_a(a_init, background, LCDM=LCDM)
     d = a_init^(1.0 - 3.0 * f_init / 5.0)
     v = (1.0 - 3.0 * f_init / 5.0) * a_init^(-3.0 * f_init / 5.0)
     
     function growth_ode!(du, u, p, a)
         d_val, v_val = u
-        cosmo, LCDM = p
-        fv = -(2.0 + _AH(a, cosmo, LCDM=LCDM) / _Hubble2(a, cosmo, LCDM=LCDM)) * v_val / a
-        fd = 1.5 * _Omega_m_a(a, cosmo, LCDM=LCDM) * d_val / a^2
+        bg, is_lcdm = p
+        fv = -(2.0 + _AH(a, bg, LCDM=is_lcdm) / _Hubble2(a, bg, LCDM=is_lcdm)) * v_val / a
+        fd = 1.5 * _Omega_m_a(a, bg, LCDM=is_lcdm) * d_val / a^2
         du[1] = v_val
         du[2] = fv + fd
     end
     
     u0 = [d, v]
-    prob = ODEProblem(growth_ode!, u0, (a_init, 1.0), (cosmo, LCDM))
+    prob = ODEProblem(growth_ode!, u0, (a_init, 1.0), (background, LCDM))
     sol = solve(prob, Tsit5(), reltol=1e-8, abstol=1e-8)
     
-    g_vals = [sol(a)[1] for a in a_vals]
-    
-    itp = scale(interpolate(g_vals, BSpline(Cubic(Line(OnGrid())))), a_vals)
-    return extrapolate(itp, Line())
+    return [sol(a)[1] for a in a_vals]
 end
 
 function get_accumulated_growth(a::Float64, g_func)

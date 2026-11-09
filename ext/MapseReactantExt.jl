@@ -965,10 +965,12 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
     k_linear = k_support === nothing ? k : k_support
     pkcb = _hmcode_choose_cb(pk_cb_z, pk_cb_support_z)
     pkcb === nothing && (pkcb = pk_mm_z)
-    return _hmcode_Pmm_reactant(cosmo, z, k, k_linear, pk_mm_z, pkcb;
+    h = cosmo.h
+    return _hmcode_Pmm_reactant(cosmo, z, k ./ h, k_linear ./ h,
+                                pk_mm_z .* h^3, pkcb .* h^3;
                                 T_AGN=T_AGN, Mmin=Mmin, Mmax=Mmax,
                                 nM=nM, growth_cosmo=growth_cosmo,
-                                growth_tables=growth_tables)
+                                growth_tables=growth_tables) ./ h^3
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::ReactantVec, k::ReactantVec,
@@ -1156,14 +1158,7 @@ function _hmcode_pmm_baryonic_smart_device(
     pk_mm = Mapse.get_Pk(params, z_coarse, growth, pmm_emu)
     pk_cb = Mapse.get_Pk(params, z_coarse, growth, pcb_emu)
     h = sum(params[3:3]) / 100
-    # The official linear emulators return physical k [Mpc^-1] and P [Mpc^3].
-    # HMCode itself is written in h-units, like the JAX implementation:
-    # k_h = k_phys / h and P_h = P_phys * h^3. Convert back after the
-    # nonlinear calculation so the public smart API remains in physical units.
-    k_h = k_out ./ h
-    k_support_h = pmm_emu.kgrid ./ h
-    pk_mm_h = pk_mm .* h^3
-    pk_cb_h = pk_cb .* h^3
+    # Linear emulators and all public HMCode paths use physical Mpc units.
     omega_b = sum(params[4:4]) / h^2
     omega_nu = (sum(params[6:6]) / 93.14) / h^2
     omega_m = omega_b + sum(params[5:5]) / h^2 + omega_nu
@@ -1172,13 +1167,12 @@ function _hmcode_pmm_baryonic_smart_device(
         sum(params[7:7]), sum(params[8:8]), omega_nu, cosmo.Omega_k)
     dynamic_T_AGN = sum(10.0 .^ logT_AGN)
     z_split = z_coarse[(N_left + 1):(N_left + 1)]
-    result_h = hmcode_pmm_fast_two_splines(
-        dynamic_cosmo, z_coarse, z_fine, k_h, pk_mm_h;
-        pk_cb_coarse=pk_cb_h, k_support=k_support_h,
+    return hmcode_pmm_fast_two_splines(
+        dynamic_cosmo, z_coarse, z_fine, k_out, pk_mm;
+        pk_cb_coarse=pk_cb, k_support=pmm_emu.kgrid,
         z_split=z_split, split_index=N_left + 1,
         T_AGN=dynamic_T_AGN, growth_cosmo=cosmo,
         growth_tables=growth_tables, nM=nM)
-    return result_h ./ h^3
 end
 
 """Fully traced emulator-backed DMO smart HMCode pipeline.
@@ -1207,17 +1201,15 @@ function Mapse.hmcode_pmm_dmo_smart(
     dynamic_cosmo = _hmcode_dynamic_cosmology(params, cosmo)
     growth_tables = _hmcode_dynamic_growth_tables(
         params, cosmo; na=growth_na)
-    h = dynamic_cosmo.h
     k_support = Mapse.get_kgrid(pmm_emu)
-    result_h = Mapse.hmcode_pmm_fast(
-        dynamic_cosmo, zc, z_fine, k_out ./ h, pmm_coarse .* h^3;
-        pk_cb_coarse=pcb_coarse .* h^3,
-        k_support=k_support ./ h,
+    return Mapse.hmcode_pmm_fast(
+        dynamic_cosmo, zc, z_fine, k_out, pmm_coarse;
+        pk_cb_coarse=pcb_coarse,
+        k_support=k_support,
         T_AGN=nothing,
         growth_tables=growth_tables,
         nM=nM)
 
-    return result_h ./ h^3
 end
 
 """Fully traced emulator → moving grid → HMCode → two-spline pipeline.

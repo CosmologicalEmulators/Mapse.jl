@@ -6,6 +6,28 @@ using Static
 using Mapse
 using DataInterpolations
 
+if ARGS == ["hmcode"]
+    include("test_hmcode_units.jl")
+    include("test_differentiation_interface.jl")
+    include("test_hmcode_review_regressions.jl")
+    include("test_hmcode_mooncake.jl")
+elseif ARGS == ["hmcode-mooncake"]
+    include("test_hmcode_mooncake.jl")
+elseif ARGS == ["hmcode-nfw"]
+    include("test_hmcode_nfw_mooncake.jl")
+elseif ARGS == ["hmcode-threaded"]
+    include("test_hmcode_threaded_mooncake.jl")
+elseif ARGS == ["hmcode-threaded-pipelines"]
+    include("test_hmcode_threaded_pipelines.jl")
+elseif ARGS == ["hmcode-pipelines"]
+    include("test_hmcode_spectrum_mooncake.jl")
+    include("test_hmcode_emulator_mooncake.jl")
+elseif ARGS == ["hmcode-review"]
+    include("test_hmcode_review_regressions.jl")
+elseif ARGS == ["hmcode-curved"]
+    include("test_hmcode_curved_reactant.jl")
+else
+isempty(ARGS) || error("Unknown test subset: $(ARGS)")
 include("test_aqua.jl")
 include("test_jet.jl")
 
@@ -208,12 +230,15 @@ x3 = Array(LinRange(-1., 1., 100))
     @test mapse_class_pk_nl ≈ class_pk_nl rtol=6e-3
 
     hmcode_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_camb_reference.txt"), comments=true)
+    hmcode_h = 0.6736
+    # The saved CAMB table uses h-units; the public API uses Mpc units.
+    hmcode_reference[:, 2] .*= hmcode_h
+    hmcode_reference[:, 3:5] ./= hmcode_h^3
     hmcode_z = unique(hmcode_reference[:, 1])
     hmcode_k = hmcode_reference[hmcode_reference[:, 1] .== hmcode_z[1], 2]
     hmcode_pk_mm = reshape(hmcode_reference[:, 3], length(hmcode_k), length(hmcode_z))
     hmcode_pk_cb = reshape(hmcode_reference[:, 4], length(hmcode_k), length(hmcode_z))
     hmcode_boost_ref = reshape(hmcode_reference[:, 6], length(hmcode_k), length(hmcode_z))
-    hmcode_h = 0.6736
     hmcode_Ωb = 0.02237 / hmcode_h^2
     hmcode_Ων = 0.06 / (93.14 * hmcode_h^2)
     hmcode_Ωm = hmcode_Ωb + 0.12 / hmcode_h^2 + hmcode_Ων
@@ -429,6 +454,8 @@ x3 = Array(LinRange(-1., 1., 100))
 
 
     hmcode_curved_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_curved_parity_reference.txt"), comments=true)
+    hmcode_curved_reference[:, 2] .*= hmcode_h
+    hmcode_curved_reference[:, 3:6] ./= hmcode_h^3
     hmcode_curved_z = unique(hmcode_curved_reference[:, 1])
     hmcode_curved_k = hmcode_curved_reference[hmcode_curved_reference[:, 1] .== hmcode_curved_z[1], 2]
     hmcode_curved_pmm = reshape(hmcode_curved_reference[:, 3], length(hmcode_curved_k), length(hmcode_curved_z))
@@ -611,13 +638,16 @@ include("test_hmcode_reactant_smart.jl")
         0.0
     )
 
+    k_vals = k_vals .* cosmo.h
+    pk_mm_lin ./= cosmo.h^3
+    pk_cb_lin ./= cosmo.h^3
     dmo = Mapse.hmcode_pmm(cosmo, z_vals, k_vals, pk_mm_lin; pk_cb_z=pk_cb_lin, T_AGN=nothing)
     feedback = Mapse.hmcode_pmm(cosmo, z_vals, k_vals, pk_mm_lin; pk_cb_z=pk_cb_lin, T_AGN=10.0^7.8)
 
     boost = feedback ./ pk_mm_lin
     dmo_boost = dmo ./ pk_mm_lin
 
-    mask10 = k_vals .<= 10.0
+    mask10 = k_vals .<= 10.0 * cosmo.h
     boost_masked = boost[mask10, :]
 
     err_boost = abs.(boost_masked .- boost_ref) ./ boost_ref
@@ -627,7 +657,7 @@ include("test_hmcode_reactant_smart.jl")
     err_dmo = abs.(dmo_boost[mask10, :] .- dmo_boost_ref) ./ dmo_boost_ref
     @test maximum(err_dmo) < 3.0e-3
 
-    mask_low_k = k_vals .<= 3e-4
+    mask_low_k = k_vals .<= 3e-4 * cosmo.h
     @test boost[mask_low_k, :] ≈ dmo_boost[mask_low_k, :] rtol=1e-3
     @test boost[mask_low_k, :] ≈ ones(count(mask_low_k), nz) rtol=1e-3
 
@@ -638,3 +668,8 @@ include("test_hmcode_reactant_smart.jl")
     @test fast_response[mask_low_k, :] ≈ ones(count(mask_low_k), length(z_fine)) rtol=1e-3
 end
 include("test_hmcode_smart_camb.jl")
+include("test_hmcode_units.jl")
+include("test_differentiation_interface.jl")
+include("test_hmcode_review_regressions.jl")
+include("test_hmcode_mooncake.jl")
+end

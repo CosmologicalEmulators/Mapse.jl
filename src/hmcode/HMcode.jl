@@ -1,7 +1,6 @@
 module HMcode
 
 using Base.Threads
-using DataInterpolations
 using Integrals
 using Interpolations
 using LinearAlgebra

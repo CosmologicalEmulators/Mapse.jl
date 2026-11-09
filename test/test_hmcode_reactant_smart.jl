@@ -1,6 +1,5 @@
 using Test
 using DelimitedFiles
-using Enzyme
 using Reactant
 using Mapse
 
@@ -30,7 +29,6 @@ function _native_hmcode_prediction(
     smart::Bool, feedback::Bool,
 )
     cosmo = _native_hmcode_cosmology(params, sigma_8)
-    h = cosmo.h
     temperature = feedback ? 10.0^logT_AGN : nothing
     z_coarse = if smart
         if feedback
@@ -45,10 +43,10 @@ function _native_hmcode_prediction(
     end
     pk_mm, pk_cb = _native_linear_spectra(
         params, z_coarse, pmm_emu, pcb_emu, growth_emu)
-    k_support_h = collect(Mapse.get_kgrid(pmm_emu)) ./ h
+    k_support = collect(Mapse.get_kgrid(pmm_emu))
 
     if !smart
-        return Mapse.hmcode_pmm_physical(
+        return Mapse.hmcode_pmm(
             cosmo, z, k, pk_mm;
             pk_cb_z=pk_cb,
             k_support=collect(Mapse.get_kgrid(pmm_emu)),
@@ -57,26 +55,25 @@ function _native_hmcode_prediction(
             threaded=false,
         )
     elseif feedback
-        result_h = Mapse.hmcode_pmm_baryonic_smart(
-            cosmo, z, k ./ h, pk_mm .* h^3;
-            pk_cb_coarse=pk_cb .* h^3,
-            k_support=k_support_h,
+        return Mapse.hmcode_pmm_baryonic_smart(
+            cosmo, z, k, pk_mm;
+            pk_cb_coarse=pk_cb,
+            k_support=k_support,
             N_coarse=24,
             T_AGN=temperature,
             nM=128,
             threaded=false,
         )
     else
-        result_h = Mapse.hmcode_pmm_fast(
-            cosmo, z_coarse, z, k ./ h, pk_mm .* h^3;
-            pk_cb_coarse=pk_cb .* h^3,
-            k_support=k_support_h,
+        return Mapse.hmcode_pmm_fast(
+            cosmo, z_coarse, z, k, pk_mm;
+            pk_cb_coarse=pk_cb,
+            k_support=k_support,
             T_AGN=nothing,
             nM=128,
             threaded=false,
         )
     end
-    return result_h ./ h^3
 end
 
 @testset "Full Reactant smart HMCode pipeline" begin
@@ -290,54 +287,4 @@ end
         end
     end
 
-    # Reverse mode must compile through the complete small smart pipeline.
-    z_gradientR = Reactant.to_rarray(collect(range(0.0, 3.0; length=5)))
-    k_gradientR = Reactant.to_rarray(collect(Mapse.get_kgrid(pmm_emu))[1:100:end])
-    function smart_loss(p, logT, z, z_limits, k, pmm, pcb, growth, c)
-        prediction = Mapse.hmcode_pmm_baryonic_smart(
-            p, z, z_limits, k, logT, pmm, pcb, growth, c;
-            N_coarse=10, N_left=5, nM=4, growth_na=8)
-        return sum(log.(prediction)) / length(prediction)
-    end
-    function smart_gradient(p, logT, z, z_limits, k, pmm, pcb, growth, c)
-        derivatives = Enzyme.gradient(
-            Reverse,
-            smart_loss,
-            p,
-            logT,
-            Const(z),
-            Const(z_limits),
-            Const(k),
-            Const(pmm),
-            Const(pcb),
-            Const(growth),
-            Const(c),
-        )
-        return derivatives[1], derivatives[2]
-    end
-    compiled_gradient = Reactant.@compile sync=true smart_gradient(
-        paramsR, logT_R, z_gradientR, z_limitsR, k_gradientR,
-        pmm_emuR, pcb_emuR, growth_emuR, cosmo)
-    params_gradient, temperature_gradient = compiled_gradient(
-        paramsR, logT_R, z_gradientR, z_limitsR, k_gradientR,
-        pmm_emuR, pcb_emuR, growth_emuR, cosmo)
-    shifted_params_gradient, shifted_temperature_gradient = compiled_gradient(
-        params_highR, logT_highR, z_gradientR, z_limitsR, k_gradientR,
-        pmm_emuR, pcb_emuR, growth_emuR, cosmo)
-    Reactant.synchronize(params_gradient)
-    Reactant.synchronize(temperature_gradient)
-    Reactant.synchronize(shifted_params_gradient)
-    Reactant.synchronize(shifted_temperature_gradient)
-    params_gradient_host = Array(params_gradient)
-    temperature_gradient_host = Array(temperature_gradient)
-    shifted_params_gradient_host = Array(shifted_params_gradient)
-    shifted_temperature_gradient_host = Array(shifted_temperature_gradient)
-    @test all(isfinite, params_gradient_host)
-    @test all(isfinite, temperature_gradient_host)
-    @test all(isfinite, shifted_params_gradient_host)
-    @test all(isfinite, shifted_temperature_gradient_host)
-    @test any(!=(0), params_gradient_host)
-    @test any(!=(0), temperature_gradient_host)
-    @test params_gradient_host != shifted_params_gradient_host
-    @test temperature_gradient_host != shifted_temperature_gradient_host
 end

@@ -64,9 +64,11 @@ pk_cb_fine_sup_np = data["pk_cb_fine_support"]
 pk_mm_coarse_sup_np = data["pk_mm_coarse_support"]   # (50, 200)
 pk_cb_coarse_sup_np = data["pk_cb_coarse_support"]
 
-# Julia convention: (nk, nz) — transpose from JAX (nz, nk)
-k = Vector{Float64}(k_np)
-k_support = Vector{Float64}(k_support_np)
+# The legacy shared input file uses h-units. Convert once at loading, then
+# use the physical-unit public API for both native and Reactant measurements.
+h = 0.6736
+k = Vector{Float64}(k_np) .* h
+k_support = Vector{Float64}(k_support_np) .* h
 z_fine = Vector{Float64}(z_fine_np)
 z_coarse = Vector{Float64}(z_coarse_np)
 pk_mm_fine = Matrix{Float64}(permutedims(pk_mm_fine_np))          # (128, 300)
@@ -77,6 +79,10 @@ pk_mm_fine_sup = Matrix{Float64}(permutedims(pk_mm_fine_sup_np))  # (200, 300)
 pk_cb_fine_sup = Matrix{Float64}(permutedims(pk_cb_fine_sup_np))  # (200, 300)
 pk_mm_coarse_sup = Matrix{Float64}(permutedims(pk_mm_coarse_sup_np))  # (200, 50)
 pk_cb_coarse_sup = Matrix{Float64}(permutedims(pk_cb_coarse_sup_np))  # (200, 50)
+for pk in (pk_mm_fine, pk_cb_fine, pk_mm_coarse, pk_cb_coarse,
+           pk_mm_fine_sup, pk_cb_fine_sup, pk_mm_coarse_sup, pk_cb_coarse_sup)
+    pk ./= h^3
+end
 
 println("\nInput spectra: $(basename(input_file))")
 println("  Source: CAMB z=0 linear P(k) scaled by Carroll et al. (1992) growth factor")
@@ -92,7 +98,6 @@ println("  pk_mm_coarse_support: $(size(pk_mm_coarse_sup)) (nk_support, nz)")
 # ---------------------------------------------------------------------------
 # Cosmology
 # ---------------------------------------------------------------------------
-h = 0.6736
 Omega_b = 0.02237 / h^2
 Omega_nu = 0.06 / (93.14 * h^2)
 Omega_m = Omega_b + 0.12 / h^2 + Omega_nu

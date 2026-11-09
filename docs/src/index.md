@@ -90,17 +90,13 @@ For HMCode, you can load both the total-matter and cold+baryon emulators to get 
 # Evaluate linear cold+baryon spectrum
 pk_cb_lin = Mapse.get_Pk(params, z, D, pcb)
 
-# Set up background HMCode cosmology
+# Use the same cosmology as the linear emulators.
+h = params[3] / 100
+Ωb = params[4] / h^2
+Ων = params[6] / (93.14 * h^2)
+Ωm = Ωb + params[5] / h^2 + Ων
 cosmo = Mapse.HMCodeCosmology(
-    0.3,   # Ωm
-    0.05,  # Ωb
-    0.7,   # h
-    0.96,  # ns
-    0.8,   # σ8
-    -1.0,  # w0
-    0.0,   # wa
-    0.0,   # Ων
-    0.0,   # Ωk
+    Ωm, Ωb, h, params[2], 0.8109118, params[7], params[8], Ων, 0.0,
 )
 
 # Compute nonlinear Pmm using HMCode2020
@@ -178,6 +174,11 @@ pk_nl_out = Mapse.hmcode_pmm(cosmo, z, k_out, k_support, pk_mm_support_z;
                              pk_cb_support_z=pk_cb_support_z)
 ```
 
+All public HMCode entry points use **physical units**: wavenumbers in Mpc⁻¹
+and power spectra in Mpc³. This includes direct, fast, smart, scalar-redshift,
+and Reactant calls. The conversion to HMCode's internal h-units is automatic;
+do not multiply the input power by h³ or divide the input k by h yourself.
+
 As for `halofit_Pmm`, spectra have shape `(length(k), length(z))`. `pk_mm_z` is
 the total-matter linear spectrum and sets the returned nonlinear `Pmm`/boost. For
 massive-neutrino cosmologies, pass `pk_cb_z` as the cold+baryon linear spectrum;
@@ -193,6 +194,59 @@ but the nonlinear output is returned on `k_out`. This is useful when σ(R,z) nee
 a broad high-k support grid while the downstream application only needs a smaller
 or coarser output grid. `hmcode_boost` divides by the total-matter linear spectrum
 interpolated onto `k_out` in this mode.
+
+### Native differentiation
+
+Load `ForwardDiff` to activate the native HMCode extension. Use
+DifferentiationInterface's `prepare_gradient` once and reuse the preparation
+for repeated evaluations. Direct and smart DMO/feedback paths support
+first-order cosmological and spectrum derivatives; the baryonic feature can
+move inside the coarse redshift grid. Bracketed nonlinear radii are
+differentiated implicitly, and moving quadrature limits include their
+Leibniz boundary terms.
+
+For native `Float64` reverse mode, load both `Mooncake` and `ForwardDiff`, then
+use `AutoMooncake()` with the same prepared-gradient interface. Both
+`threaded=false` and `threaded=true` are supported. Focused validation covers
+direct/fast DMO and feedback, live-emulator direct/smart feedback, and independent
+Pmm/Pcb input-spectrum gradients with the default `use_fast_specials=true`.
+The growth-table rule uses a local four-parameter ForwardDiff sensitivity
+calculation, and the nonlinear-radius rule uses a local ForwardDiff slope.
+The existing emulator pullback also retains its ForwardDiff fallback. The
+mutating NFW rule instead evaluates analytical derivatives of the actual
+piecewise Si/Ci approximation, without ForwardDiff or a full NFW reverse tape.
+These mixed-mode components are not whole-HMCode ForwardDiff Jacobians.
+
+Threaded reverse assembly uses a dedicated Mooncake boundary around Polyester:
+each logical chunk owns its scratch buffers, reverse tape and private cotangents.
+Private cotangents contain only the chunk's assembly inputs and owned buffers,
+not other chunks' scratch or unused workspace state. Reduction preserves aliases
+back into the full caller workspace.
+The scheduling machinery itself is not differentiated, and there is no automatic
+serial fallback. Repeated references to the same read-only array are supported;
+distinct array/storage objects with overlapping memory are rejected before
+mutation, including aliases through otherwise-unused workspace fields. Output
+and scratch must also be disjoint from read-only inputs and each other. Internal
+nonempty assembly requires an output of size `(length(k), length(z))`.
+
+Do not share mutable AD preparations or workspaces between concurrent
+evaluations. Independent callers must each own their state and preparation.
+Prepare and warm those states serially before concurrent inference, and do not
+load methods/packages or clear Mooncake caches while evaluations are running.
+Exact replay is tested at a fixed thread count; changing the reduction grouping
+across thread counts can change gradients at floating-point roundoff level.
+Threading is not a guarantee of speedup: private cotangent allocation and
+reduction add overhead, especially at high thread counts. Benchmark the complete
+prepared gradient for the actual workload rather than extrapolating primal gains.
+
+The physical model and interpolation remain piecewise smooth. A cap or grid
+selection boundary is not a promise of a unique derivative, and these tests
+do not certify second derivatives. The `use_fast_specials=false` path currently
+lacks a ForwardDiff method for `wnfw_xc`. Its threaded Mooncake assembly boundary
+is tested against serial reverse mode, including nonzero cotangents, aliases and
+restoration; the end-to-end validation above uses `use_fast_specials=true`.
+The growth-emulator-backed smart pipeline must stay within its background
+emulator's `0 ≤ z ≤ 3` domain.
 
 With `Reactant` loaded, `hmcode_Pmm` and `hmcode_boost` also dispatch on
 Reactant arrays. For compiled support-grid calls, pass the cold+baryon spectrum

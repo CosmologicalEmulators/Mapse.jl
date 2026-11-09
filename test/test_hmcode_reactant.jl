@@ -28,6 +28,9 @@ using Mapse
     @test device_grid1 != device_grid2
 
     hmcode_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_camb_reference.txt"), comments=true)
+    h = 0.6736
+    hmcode_reference[:, 2] .*= h
+    hmcode_reference[:, 3:5] ./= h^3
     z_all = unique(hmcode_reference[:, 1])
     k_support = collect(hmcode_reference[hmcode_reference[:, 1] .== z_all[1], 2])
     z = collect(z_all[1:1])
@@ -38,7 +41,6 @@ using Mapse
     pk_mm = Array(pk_mm_all[:, 1:1])
     pk_cb = Array(pk_cb_all[:, 1:1])
 
-    h = 0.6736
     Ωb = 0.02237 / h^2
     Ων = 0.06 / (93.14 * h^2)
     Ωm = Ωb + 0.12 / h^2 + Ων
@@ -54,13 +56,15 @@ using Mapse
 
     # Public physical-unit boundary: the wrapper must agree with the internal
     # HMCode calculation after the explicit k/P unit conversion.
-    physical_pmm = Mapse.hmcode_pmm_physical(
+    physical_pmm = Mapse.hmcode_pmm(
         cosmo, z, k_out, pk_mm;
         k_support=k_support, pk_cb_support_z=pk_cb, nM=32, threaded=false,
     )
-    expected_physical_pmm = Mapse.hmcode_Pmm(
-        cosmo, z, k_out ./ h, k_support ./ h, pk_mm .* h^3;
-        pk_cb_support_z=pk_cb .* h^3, nM=32, threaded=false,
+    pk_interp, _ = Mapse._hmcode_linear_interpolators(z, k_support ./ h, pk_mm .* h^3)
+    _, sigma_interp = Mapse._hmcode_linear_interpolators(z, k_support ./ h, pk_cb .* h^3)
+    expected_physical_pmm = Mapse.HMcode.hmcode_power(
+        k_out ./ h, z, pk_interp, sigma_interp, cosmo;
+        k_support=k_support ./ h, nM=32, threaded=false,
     ) ./ h^3
     @test physical_pmm ≈ expected_physical_pmm rtol=1e-12 atol=1e-12
     @test all(isfinite, physical_pmm)
@@ -158,30 +162,7 @@ using Mapse
     @test all(isfinite, boost)
     @test boost ≈ native_boost rtol=3e-3
 
-    curved_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_curved_parity_reference.txt"), comments=true)
-    curved_z = unique(curved_reference[:, 1])
-    curved_k = collect(curved_reference[curved_reference[:, 1] .== curved_z[1], 2])
-    curved_pmm = reshape(curved_reference[:, 3], length(curved_k), length(curved_z))
-    curved_pcb = reshape(curved_reference[:, 4], length(curved_k), length(curved_z))
-    curved_dmo = reshape(curved_reference[:, 5], length(curved_k), length(curved_z))
-    curved_feedback = reshape(curved_reference[:, 6], length(curved_k), length(curved_z))
-    curved_cosmo = Mapse.HMCodeCosmology(Ωm, Ωb, h, 0.9649, 0.8109118,
-                                         -0.9, 0.2, Ων, 0.01)
-
-    curved_zR = Reactant.to_rarray(collect(curved_z))
-    curved_kR = Reactant.to_rarray(curved_k)
-    curved_pmmR = Reactant.to_rarray(curved_pmm)
-    curved_pcbR = Reactant.to_rarray(curved_pcb)
-    curved_dmoR = Mapse.hmcode_Pmm(curved_cosmo, curved_zR, curved_kR, curved_pmmR;
-                                   pk_cb_z=curved_pcbR, T_AGN=nothing, nM=32)
-    curved_feedbackR = Mapse.hmcode_Pmm(curved_cosmo, curved_zR, curved_kR, curved_pmmR;
-                                        pk_cb_z=curved_pcbR, T_AGN=10.0^7.8, nM=32)
-    Reactant.synchronize(curved_dmoR)
-    Reactant.synchronize(curved_feedbackR)
-    # Native HMCode uses adaptive root finding/integration; Reactant uses the
-    # fixed compiled grid algorithm. This curved w0waCDM case needs 1.5%.
-    @test Array(curved_dmoR) ≈ curved_dmo rtol=1.5e-2
-    @test Array(curved_feedbackR) ≈ curved_feedback rtol=1.5e-2
+    include("test_hmcode_curved_reactant.jl")
     # Fast path numerical parity tests
     z_coarse_arr = collect(range(0.0, 3.0, length=5))
     z_fine_arr = collect(range(0.0, 3.0, length=20))
@@ -331,6 +312,8 @@ using Mapse
 
     # UCF-3: Patched-CLASS low-k Reactant coverage
     class_reference = readdlm(joinpath(@__DIR__, "data", "hmcode_class_feedback_reference.txt"), comments=true)
+    class_reference[:, 2] .*= h
+    class_reference[:, 3:5] ./= h^3
     z_class = unique(class_reference[:, 1])
     k_class = class_reference[class_reference[:, 1] .== z_class[1], 2]
     pk_mm_class = zeros(length(k_class), length(z_class))
@@ -359,7 +342,7 @@ using Mapse
     out_class_fb_arr = Array(out_class_fb)
     out_class_dmo_arr = Array(out_class_dmo)
 
-    mask_low_k_class = k_class .<= 3e-4
+    mask_low_k_class = k_class .<= 3e-4 * h
     boost_class = out_class_fb_arr ./ pk_mm_class
     dmo_boost_class = out_class_dmo_arr ./ pk_mm_class
 

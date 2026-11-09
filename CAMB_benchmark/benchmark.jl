@@ -41,19 +41,17 @@ function growth_at(z, params, growth_emu)
 end
 
 function baryonic_smart_physical(cosmo, z_fine, k_out, k_support, pk_mm, pk_cb; N_coarse, T_AGN, nM)
-    h = cosmo.h
-    result_h = Mapse.hmcode_pmm_baryonic_smart(
-        cosmo, z_fine, k_out ./ h, pk_mm .* h^3;
-        pk_cb_coarse=pk_cb .* h^3, k_support=k_support ./ h,
+    return Mapse.hmcode_pmm_baryonic_smart(
+        cosmo, z_fine, k_out, pk_mm;
+        pk_cb_coarse=pk_cb, k_support=k_support,
         N_coarse=N_coarse, T_AGN=T_AGN, nM=nM)
-    return result_h ./ h^3
 end
 
 function direct_pipeline(params, cosmo, z, k_out, k_support, pmm_emu, pcb_emu, growth_emu; T_AGN=nothing, nM=NM)
     growth = growth_at(z, params, growth_emu)
     pmm = Mapse.get_Pk(params, z, growth, pmm_emu)
     pcb = Mapse.get_Pk(params, z, growth, pcb_emu)
-    return Mapse.hmcode_pmm_physical(cosmo, z, k_out, pmm;
+    return Mapse.hmcode_pmm(cosmo, z, k_out, pmm;
         pk_cb_z=pcb, k_support=k_support, T_AGN=T_AGN, nM=nM)
 end
 

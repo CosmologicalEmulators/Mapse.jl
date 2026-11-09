@@ -46,6 +46,27 @@ const R_G_ASYM_DEN = (1.0, 0.16287957674166143196E4, 0.96636303195787870963E6, 0
     return si_large, ci_large
 end
 
+@inline function sici_fast(x::Real)
+    t = x*x
+    invt = inv(t)
+    sx, cx = sin(x), cos(x)
+    if t <= 144.0
+        f = (evalpoly(invt, P_F_RAT1) / evalpoly(invt, Q_F_RAT1)) / x
+        g = (evalpoly(invt, R_G_RAT1) / evalpoly(invt, S_G_RAT1)) * invt
+    else
+        f = (1.0 - evalpoly(invt, P_F_ASYM_NUM) * invt / evalpoly(invt, P_F_ASYM_DEN)) / x
+        g = (1.0 - evalpoly(invt, R_G_ASYM_NUM) * invt / evalpoly(invt, R_G_ASYM_DEN)) * invt
+    end
+
+    si_large = pi/2.0 - f*cx - g*sx
+    ci_large = f*sx - g*cx
+
+    if x <= 4.0
+        return si_small(x), EULER_GAMMA + log(x) + ci_int_small(x)
+    end
+    return si_large, ci_large
+end
+
 # ------------------------------------------------------------
 # NFW window functions
 # ------------------------------------------------------------
@@ -82,9 +103,37 @@ end
     return (ΔSi*s + ΔCi*cv - sinc_xp) / norm
 end
 
+@inline function wnfw_fast(x::Real, c::Real, ln1pc::Real)
+    x_plus = x * (1.0 + 1.0/c)
+    x_minus = x / c
+
+    si_plus, ci_plus = sici_fast(x_plus)
+    si_minus, ci_minus = sici_fast(x_minus)
+
+    ΔSi = si_plus - si_minus
+    ΔCi = ci_plus - ci_minus
+
+    s, cv = sin(x_minus), cos(x_minus)
+    sinc_xp = sin(x) / x_plus
+    norm = ln1pc - c/(1.0 + c)
+    return (ΔSi*s + ΔCi*cv - sinc_xp) / norm
+end
+
 function win_NFW_fast!(W_buf::AbstractMatrix{Float64}, k::AbstractVector{Float64}, rv_eff::AbstractVector{Float64}, c_vec::AbstractVector{Float64}, ln1pc::AbstractVector{Float64})
     nM, nk = size(W_buf)
     @turbo warn_check_args=false for ik in 1:nk, iM in 1:nM
+        x = k[ik] * rv_eff[iM]
+        W_buf[iM, ik] = wnfw_fast(x, c_vec[iM], ln1pc[iM])
+    end
+    return W_buf
+end
+
+
+function win_NFW_fast!(W_buf::AbstractMatrix, k::AbstractVector,
+                       rv_eff::AbstractVector, c_vec::AbstractVector,
+                       ln1pc::AbstractVector)
+    nM, nk = size(W_buf)
+    @inbounds for ik in 1:nk, iM in 1:nM
         x = k[ik] * rv_eff[iM]
         W_buf[iM, ik] = wnfw_fast(x, c_vec[iM], ln1pc[iM])
     end

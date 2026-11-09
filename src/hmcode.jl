@@ -104,7 +104,7 @@ end
 
 @inline function (itp::HMCodeSigmaInterpolator)(R::Real, iz::Int)
     logpk_col = view(itp.logpk, :, iz)
-    integrand = similar(itp.logk)
+    integrand = similar(itp.logk, promote_type(eltype(itp.logk), typeof(R)))
     @inbounds for i in eachindex(itp.logk)
         kval = itp.k[i]
         pkval = exp(logpk_col[i])
@@ -117,10 +117,13 @@ end
 HMcode._eval_sigma(f::HMCodeSigmaInterpolator, R, z, iz) = f(R, iz)
 HMcode._eval_pk(f::HMCodeLinearInterpolator, k, z, iz) = f(k, iz)
 
-@inline (s::HMcode.SigmaREval{<:HMCodeSigmaInterpolator})(R::Float64) = s.sigma_R(R, s.iz)
-@inline (s::HMcode.PkLinEval{<:HMCodeLinearInterpolator})(k::Float64) = s.Pk_lin(k, s.iz)
+@inline (s::HMcode.SigmaREval{<:HMCodeSigmaInterpolator})(R::Real) = s.sigma_R(R, s.iz)
+@inline (s::HMcode.PkLinEval{<:HMCodeLinearInterpolator})(k::Real) = s.Pk_lin(k, s.iz)
 
-function _hmcode_linear_interpolators(z::AbstractVector, k::AbstractVector, pk_lin_z::AbstractMatrix)
+function _hmcode_linear_interpolators(
+    z::AbstractVector, k::AbstractVector{Float64},
+    pk_lin_z::AbstractMatrix{Float64},
+)
     logk = log.(Float64.(k))
     logpk = log.(Float64.(pk_lin_z))
     pk_lin = HMCodeLinearInterpolator(logk, logpk, z)
@@ -149,10 +152,44 @@ function _hmcode_linear_interpolators(z::AbstractVector, k::AbstractVector, pk_l
     return pk_lin, sigma_R
 end
 
+function _hmcode_linear_interpolators(
+    z::AbstractVector, k::AbstractVector, pk_lin_z::AbstractMatrix,
+)
+    T = promote_type(eltype(k), eltype(pk_lin_z))
+    k_typed = T.(k)
+    pk_typed = T.(pk_lin_z)
+    logk = log.(k_typed)
+    logpk = log.(pk_typed)
+    pk_lin = HMCodeLinearInterpolator(logk, logpk, z)
+
+    log_step = log(k_typed[end] / k_typed[end - 1])
+    unit_interval = collect(range(0.0, 1.0; length=64))
+    log_limit = log(one(log_step) * 1.0e4)
+    log_factors = log_step .+ (log_limit - log_step) .* unit_interval
+    k_tail = k_typed[end] .* exp.(log_factors)
+    nfit = min(12, length(k_typed))
+    fit_indices = (length(k_typed) - nfit + 1):length(k_typed)
+    logk_fit = logk[fit_indices]
+    centered_logk = logk_fit .- mean(logk_fit)
+    logpk_fit = logpk[fit_indices, :]
+    centered_logpk = logpk_fit .- mean(logpk_fit; dims=1)
+    high_k_slope = vec(sum(
+        centered_logpk .* reshape(centered_logk, :, 1); dims=1) ./
+        sum(centered_logk .^ 2))
+    pk_tail = pk_typed[end:end, :] .* exp.(
+        reshape(log_factors, :, 1) .* reshape(high_k_slope, 1, :))
+    k_sigma = vcat(k_typed, k_tail)
+    logk_sigma = log.(k_sigma)
+    logpk_sigma = log.(vcat(pk_typed, pk_tail))
+    sigma_R = HMCodeSigmaInterpolator(logk_sigma, logpk_sigma, k_sigma, z)
+    return pk_lin, sigma_R
+end
+
 function _hmcode_matrix_from_interpolator(pk, z::AbstractVector, k::AbstractVector)
-    out = Matrix{Float64}(undef, length(k), length(z))
+    sample = HMcode._eval_pk(pk, first(k), first(z), firstindex(z))
+    out = Matrix{typeof(sample)}(undef, length(k), length(z))
     @inbounds for iz in eachindex(z), ik in eachindex(k)
-        out[ik, iz] = pk(k[ik], z[iz])
+        out[ik, iz] = HMcode._eval_pk(pk, k[ik], z[iz], iz)
     end
     return out
 end
@@ -175,7 +212,10 @@ end
     hmcode_Pmm(cosmo, z::Number, k, pk_mm; pk_cb=nothing, k_support=nothing, pk_cb_support=nothing, kwargs...)
 
 Compute the HMCode2020 nonlinear matter power spectrum from a sampled linear
-matter power spectrum. For the vector-redshift methods, `z` and `k` are vectors,
+matter power spectrum. All public inputs use physical units: `k` and
+`k_support` in Mpc⁻¹, linear and nonlinear power in Mpc³. The internal h-unit
+conversion is automatic, including the scalar, fast, and Reactant methods.
+For the vector-redshift methods, `z` and `k` are vectors,
 and `pk_mm_z` must have shape `(length(k), length(z))`, matching the `halofit_Pmm` convention.
 For scalar redshifts `z::Number`, the corresponding linear spectra are 1D vectors of length `length(k)`.
 
@@ -221,11 +261,19 @@ function hmcode_Pmm(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector
         _validate_hmcode_inputs(z, k_linear, pk_cb_linear_z; name="pk_cb_z")
     end
 
-    pk_mm, _ = _hmcode_linear_interpolators(z, k_linear, pk_mm_z)
+    h = cosmo.h
+    cb = pk_cb_linear_z === nothing ? pk_mm_z : pk_cb_linear_z
+    # Propagate spectrum-only dual numbers into the kernel workspace too.
+    T = promote_type(eltype(k), eltype(k_linear), eltype(pk_mm_z), eltype(cb), typeof(h))
+    k_h = T.(k ./ h)
+    k_linear_h = T.(k_linear ./ h)
+    pk_mm, _ = _hmcode_linear_interpolators(z, k_linear_h, pk_mm_z .* h^3)
     _, sigma_R_cb = _hmcode_linear_interpolators(
-        z, k_linear, pk_cb_linear_z === nothing ? pk_mm_z : pk_cb_linear_z
+        z, k_linear_h, cb .* h^3
     )
-    return HMcode.hmcode_power(k, z, pk_mm, sigma_R_cb, cosmo; k_support=k_support, kwargs...)
+    support_h = k_support === nothing ? nothing : k_linear_h
+    return HMcode.hmcode_power(k_h, z, pk_mm, sigma_R_cb, cosmo;
+        k_support=support_h, kwargs...) ./ h^3
 end
 
 function hmcode_Pmm(cosmo::HMCodeCosmology, z::AbstractVector, k::AbstractVector,
@@ -700,7 +748,7 @@ end
 Predict the baryonic feedback threshold/feature redshift z_discontinuity.
 """
 function predict_baryonic_discontinuity(cosmo::HMCodeCosmology; T_AGN::Real=10^7.8)
-    logT_AGN = log10(Float64(T_AGN))
+    logT_AGN = log10(T_AGN)
     sbar = -0.0030 * (logT_AGN - 7.8) + 0.0201
     sbarz = 0.0224 * (logT_AGN - 7.8) + 0.409
     om_b = cosmo.Omega_b
@@ -718,7 +766,7 @@ function predict_baryonic_discontinuity(params::AbstractVector; T_AGN::Real=10^7
     om_c = omch2 / h^2
     om_nu = (Mnu / 93.14) / h^2
     om_m = om_b + om_c + om_nu
-    logT_AGN = log10(Float64(T_AGN))
+    logT_AGN = log10(T_AGN)
     sbar = -0.0030 * (logT_AGN - 7.8) + 0.0201
     sbarz = 0.0224 * (logT_AGN - 7.8) + 0.409
     return (log10(om_b / om_m) - log10(sbar)) / sbarz
@@ -743,7 +791,7 @@ function build_smart_coarse_grid(z_min::Real, z_max::Real, N_coarse::Int, z_feat
         if minimum(dists) < min_spacing
             return collect(LinRange(zmin, zmax, N_coarse))
         end
-        smart_grid = sort(vcat(grid_base, Float64(z_feature)))
+        smart_grid = sort(vcat(grid_base, z_feature))
         return smart_grid
     else
         return collect(LinRange(zmin, zmax, N_coarse))
@@ -875,39 +923,4 @@ function hmcode_pmm_baryonic_smart(cosmo::HMCodeCosmology, z_fine::Union{Real, A
     # Akima segments. Preserve the existing API by falling back to one spline.
     return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k, pk_mm_coarse_eval;
                            pk_cb_coarse=pk_cb_coarse_eval, T_AGN=T_AGN, kwargs...)
-end
-
-"""Evaluate HMCode using physical-unit inputs and return physical P(k,z).
-
-The public unit contract is `k` in Mpc⁻¹ and spectra in Mpc³. The internal
-HMCode implementation continues to use h-units.
-"""
-function hmcode_pmm_physical(cosmo::HMCodeCosmology, z::AbstractVector,
-                             k::AbstractVector, pk_mm_z::AbstractMatrix;
-                             pk_cb_z=nothing, k_support=nothing,
-                             pk_cb_support_z=nothing, kwargs...)
-    h = cosmo.h
-    k_phys_support = k_support === nothing ? k : k_support
-    pk_cb = pk_cb_support_z === nothing ? pk_cb_z : pk_cb_support_z
-    pk_cb === nothing && (pk_cb = pk_mm_z)
-    return hmcode_Pmm(cosmo, z, k ./ h, pk_mm_z .* h^3;
-                      pk_cb_z=pk_cb .* h^3,
-                      k_support=k_phys_support ./ h, kwargs...) ./ h^3
-end
-
-function hmcode_pmm_fast_physical(cosmo::HMCodeCosmology,
-                                  z_coarse::AbstractVector,
-                                  z_fine::AbstractVector,
-                                  k::AbstractVector,
-                                  pk_mm_coarse::AbstractMatrix;
-                                  pk_cb_coarse=nothing, k_support=nothing,
-                                  pk_cb_support_coarse=nothing, kwargs...)
-    h = cosmo.h
-    k_phys_support = k_support === nothing ? k : k_support
-    pk_cb = pk_cb_support_coarse === nothing ? pk_cb_coarse : pk_cb_support_coarse
-    pk_cb === nothing && (pk_cb = pk_mm_coarse)
-    return hmcode_pmm_fast(cosmo, z_coarse, z_fine, k ./ h,
-                           pk_mm_coarse .* h^3;
-                           pk_cb_coarse=pk_cb .* h^3,
-                           k_support=k_phys_support ./ h, kwargs...) ./ h^3
 end

@@ -40,10 +40,8 @@
         growth = growth_at(zc, PARAMS, growth_emu)
         pmm = Mapse.get_Pk(PARAMS, zc, growth, pmm_emu)
         pcb = Mapse.get_Pk(PARAMS, zc, growth, pcb_emu)
-        h = COSMO.h
-        result_h = Mapse.hmcode_pmm_fast(COSMO, zc, Z_FINE, K_OUT ./ h, pmm .* h^3;
-            pk_cb_coarse=pcb .* h^3, k_support=k_support ./ h, T_AGN=nothing, nM=NM)
-        smart_dmo = result_h ./ h^3
+        smart_dmo = Mapse.hmcode_pmm_fast(COSMO, zc, Z_FINE, K_OUT, pmm;
+            pk_cb_coarse=pcb, k_support=k_support, T_AGN=nothing, nM=NM)
 
         δ = abs.(smart_dmo .- ref_dmo)
         rel = δ ./ max.(abs.(ref_dmo), eps(Float64))
@@ -59,12 +57,10 @@
         growth = growth_at(zc, PARAMS, growth_emu)
         pmm = Mapse.get_Pk(PARAMS, zc, growth, pmm_emu)
         pcb = Mapse.get_Pk(PARAMS, zc, growth, pcb_emu)
-        h = COSMO.h
-        result_h = Mapse.hmcode_pmm_baryonic_smart(
-            COSMO, Z_FINE, K_OUT ./ h, pmm .* h^3;
-            pk_cb_coarse=pcb .* h^3, k_support=k_support ./ h,
+        smart_fb = Mapse.hmcode_pmm_baryonic_smart(
+            COSMO, Z_FINE, K_OUT, pmm;
+            pk_cb_coarse=pcb, k_support=k_support,
             N_coarse=n, T_AGN=T_AGN, nM=NM)
-        smart_fb = result_h ./ h^3
 
         δ = abs.(smart_fb .- ref_fb)
         rel = δ ./ max.(abs.(ref_fb), eps(Float64))

@@ -4,7 +4,6 @@ using Base: @kwdef
 using Adapt
 using AbstractCosmologicalEmulators
 import AbstractCosmologicalEmulators.get_emulator_description
-using DataInterpolations
 import JSON.parsefile
 import NPZ: npzread, npzwrite
 using Statistics
@@ -54,7 +53,7 @@ export TransferFunctionEmulator, load_emulator,
     TRAINED_EMULATOR_ARTIFACTS, lcdm_transfer_function, preprocessing_drop_primordial_parameters,
     postprocessing_lcdm_transfer_ratio,
     HalofitCosmology, halofit_cosmology, halofit_background, halofit_Pmm, halofit_pmm,
-    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_pmm_physical, hmcode_pmm_fast_physical, hmcode_boost, hmcode_pmm_fast, hmcode_pmm_fast_two_splines, hmcode_Pmm_fast, hmcode_boost_fast, validate_hmcode_fast_grids,
+    HMCodeCosmology, hmcode_Pmm, hmcode_pmm, hmcode_boost, hmcode_pmm_fast, hmcode_pmm_fast_two_splines, hmcode_Pmm_fast, hmcode_boost_fast, validate_hmcode_fast_grids,
     predict_baryonic_discontinuity, build_smart_coarse_grid, build_piecewise_coarse_grid, build_baryonic_coarse_grid, hmcode_pmm_baryonic_smart, hmcode_Pmm_baryonic_smart, hmcode_pmm_dmo_smart
 
 function growth_at(z, params, growth_emu)
@@ -72,17 +71,12 @@ function hmcode_pmm_dmo_smart(params::AbstractVector, z_fine::AbstractVector, z_
     pmm_coarse = get_Pk(params, zc, growth_coarse, pmm_emu)
     pcb_coarse = get_Pk(params, zc, growth_coarse, pcb_emu)
     
-    h = cosmo.h
-    k_h = k_out ./ h
-    
     k_support = get_kgrid(pmm_emu)
-    result_h = hmcode_pmm_fast(cosmo, zc, z_fine, k_h, pmm_coarse .* h^3;
-        pk_cb_coarse = pcb_coarse .* h^3,
-        k_support = k_support ./ h,
+    return hmcode_pmm_fast(cosmo, zc, z_fine, k_out, pmm_coarse;
+        pk_cb_coarse = pcb_coarse,
+        k_support = k_support,
         T_AGN = nothing,
         nM = nM)
-        
-    return result_h ./ h^3
 end
 
 end # module
