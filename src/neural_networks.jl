@@ -14,84 +14,71 @@ reconstruct(y::AbstractVector, c::PCACompression) = c.mean .+ c.basis * y
 reconstruct(y::AbstractMatrix, c::PCACompression) = c.mean .+ c.basis * y
 
 """
-    preprocessing_linear_pk_mnuw0wacdm(params)
+    preprocessing_drop_primordial_parameters(params)
 
 Preprocessing used by ``mnuw0wacdm`` linear-power-spectrum MAPSE emulators.
 The expected input order is
 ``[ln10As, ns, H0, ombh2, omch2, Mν, w0, wa]``; the linear
 networks receive all parameters except the primordial amplitude and tilt.
 """
-function preprocessing_linear_pk_mnuw0wacdm(params::AbstractVector)
+function preprocessing_drop_primordial_parameters(params::AbstractVector)
     return params[3:end]
 end
 
 """
-    preprocessing_boost_mnuw0wacdm(params)
+    lcdm_transfer_function(params, k)
 
-Preprocessing used by ``mnuw0wacdm`` nonlinear boost MAPSE emulators.
-The boost networks receive the full cosmological parameter vector.
+Analytic LCDM transfer-function baseline used by the ``lcdm_transfer_ratio``
+MAPSE preprocessing convention. The expected parameter order is
+``[ln10As, ns, H0, ombh2, omch2, Mν, w0, wa]``.
 """
-function preprocessing_boost_mnuw0wacdm(params::AbstractVector)
-    return params
-end
-
-"""
-    postprocessing_linear_pk_mnuw0wacdm_sym_ratio(params, output, D, emu)
-
-Postprocessing used by ``mnuw0wacdm`` sym-ratio linear-power-spectrum MAPSE
-emulators. It applies the primordial spectrum, the growth factor squared, and
-the analytic ``DIFF^2`` correction used by the matching jaxmapse artifacts.
-"""
-function postprocessing_linear_pk_mnuw0wacdm_sym_ratio(params::AbstractVector, output, D, emu)
-    ln10As = params[1]
-    ns = params[2]
-    As = exp(ln10As) * 1e-10
-
+function lcdm_transfer_function(params::AbstractVector, k::AbstractVector)
     ωb = params[4]
     ωc = params[5]
     Mν = params[6]
-
-    k = get_kgrid(emu)
-    P_prim = primordial_Pk(As, ns, k)
 
     log10_k = log10.(k)
     ων = Mν / 93.14
     Δω = ωc + ων - ωb
     ωm = ωb + ωc + ων
 
-    DIFF = exp.(0.4971733969600907 .+ (-24.849067935704547 .- log.((((((0.731102574104348 .^ log10_k) .+ Δω) ./ 0.17522861267519874) .^ log10_k) .+ ((63.65597287231169 .^ (log10_k .+ 0.0472474783701488)) .* ((0.9899093975978591 .^ (log10_k ./ (cos.(log10_k ./ ((1.1964213875807956 ^ -2.3661897652294015) ./ cos.(log10_k ./ -1.8173117588773222))) ./ 0.20037856443385513))) ./ (Δω ^ 0.7767030041348179)))) .+ (0.14823981687164764 * ωm))))
-
-    D2 = D isa AbstractVector ? reshape(D .^ 2, 1, :) : D^2
-    return (output .* DIFF .^ 2) .* D2 .* P_prim
+    return exp.(0.4971733969600907 .+ (-24.849067935704547 .- log.((((((0.731102574104348 .^ log10_k) .+ Δω) ./ 0.17522861267519874) .^ log10_k) .+ ((63.65597287231169 .^ (log10_k .+ 0.0472474783701488)) .* ((0.9899093975978591 .^ (log10_k ./ (cos.(log10_k ./ ((1.1964213875807956 ^ -2.3661897652294015) ./ cos.(log10_k ./ -1.8173117588773222))) ./ 0.20037856443385513))) ./ (Δω ^ 0.7767030041348179)))) .+ (0.14823981687164764 * ωm))))
 end
 
 """
-    postprocessing_boost_log10(params, output, D, emu)
+    postprocessing_lcdm_transfer_ratio(params, output, D, emu)
 
-Postprocessing used by MAPSE boost emulators trained in log10-space.
+Postprocessing used by ``mnuw0wacdm`` sym-ratio linear-power-spectrum MAPSE
+emulators. It applies the primordial spectrum, the growth factor squared, and
+the analytic ``DIFF^2`` correction used by the matching jaxmapse artifacts.
 """
-function postprocessing_boost_log10(params::AbstractVector, output, D, emu)
-    return 10.0 .^ output
+function postprocessing_lcdm_transfer_ratio(params::AbstractVector, output, D, emu)
+    ln10As = params[1]
+    ns = params[2]
+    As = exp(ln10As) * 1e-10
+
+    k = get_kgrid(emu)
+    P_prim = primordial_Pk(As, ns, k)
+    transfer = lcdm_transfer_function(params, k)
+
+    D2 = D isa AbstractVector ? reshape(D .^ 2, 1, :) : D^2
+    return (output .* transfer .^ 2) .* D2 .* P_prim
 end
 
 const BUILTIN_PREPROCESSING = Dict{String, Function}(
     "identity" => identity,
-    "linear_pk_mnuw0wacdm" => preprocessing_linear_pk_mnuw0wacdm,
-    "boost_mnuw0wacdm" => preprocessing_boost_mnuw0wacdm,
+    "drop_primordial_parameters" => preprocessing_drop_primordial_parameters,
 )
 
 const BUILTIN_POSTPROCESSING = Dict{String, Function}(
     "identity" => (input_params, output, D, emu) -> output,
-    "linear_pk_mnuw0wacdm_sym_ratio" => postprocessing_linear_pk_mnuw0wacdm_sym_ratio,
-    "boost_log10" => postprocessing_boost_log10,
+    "lcdm_transfer_ratio" => postprocessing_lcdm_transfer_ratio,
 )
 
 const LOAD_PRESETS = Dict{Symbol, NamedTuple}(
-    :mnuw0wacdm_class => (
-        linear_preprocessing_name = :linear_pk_mnuw0wacdm,
-        linear_postprocessing_name = :linear_pk_mnuw0wacdm_sym_ratio,
-        boost_preprocessing_name = :boost_mnuw0wacdm,
-        boost_postprocessing_name = :boost_log10,
+    :identity => (
+        preprocessing_name = :identity,
+        postprocessing_name = :identity,
     ),
 )
 
@@ -106,13 +93,13 @@ const TRAINED_EMULATOR_ARTIFACTS = Dict{String, String}(
 )
 
 """
-    MapseEmulator(TrainedEmulator::AbstractTrainedEmulators, kgrid::Array,
+    TransferFunctionEmulator(TrainedEmulator::AbstractTrainedEmulators, kgrid::Array,
     InMinMax::Matrix, OutMinMax::Matrix, Preprocessing::Function, Postprocessing::Function,
     Compression::AbstractCompression)
 
-Fundamental struct for Mapse emulators (Linear or Boost).
+Fundamental struct for transfer function / linear Mapse emulators.
 """
-@kwdef mutable struct MapseEmulator <: AbstractPkEmulators
+@kwdef mutable struct TransferFunctionEmulator <: AbstractPkEmulators
     TrainedEmulator::AbstractTrainedEmulators
     kgrid::AbstractVector
     InMinMax::AbstractMatrix
@@ -122,74 +109,42 @@ Fundamental struct for Mapse emulators (Linear or Boost).
     Compression::AbstractCompression = NoCompression()
 end
 
-Adapt.@adapt_structure MapseEmulator
-
-const NonLinearBoostPkEmulator = MapseEmulator
+Adapt.@adapt_structure TransferFunctionEmulator
 
 """
-    get_Pk(input_params, z, D, emu::MapseEmulator)
-Computes and returns the power spectrum (or boost) given input parameters, redshift, and growth factor.
+    get_Pk(input_params, z, D, emu::TransferFunctionEmulator)
+Computes and returns the power spectrum given input parameters, redshift, and growth factor.
 """
-function get_Pk(input_params, z::Number, D::Union{Number, Nothing}, emu::MapseEmulator)
+function get_Pk(input_params, z::Number, D::Union{Number, Nothing}, emu::TransferFunctionEmulator)
     preprocessed_input = emu.Preprocessing(input_params)
     input = vcat(z, preprocessed_input)
     norm_input = maximin(input, emu.InMinMax)
-    output = Array(run_emulator(norm_input, emu.TrainedEmulator))
+    output = run_emulator(norm_input, emu.TrainedEmulator)
     denorm_output = inv_maximin(output, emu.OutMinMax)
     reconstructed_output = reconstruct(denorm_output, emu.Compression)
     return emu.Postprocessing(input_params, reconstructed_output, D, emu)
 end
 
-function get_Pk(input_params, z::Number, emu::MapseEmulator)
+function get_Pk(input_params, z::Number, emu::TransferFunctionEmulator)
     return get_Pk(input_params, z, nothing, emu)
 end
 
-function get_Pk(input_params, z::AbstractVector, D::AbstractVector, emu::MapseEmulator)
+function get_Pk(input_params, z::AbstractVector, D::AbstractVector, emu::TransferFunctionEmulator)
     preprocessed_input = emu.Preprocessing(input_params)
-    input = vcat(reshape(z, 1, :), repeat(preprocessed_input, 1, length(z)))
+    # Broadcast the parameter columns instead of using `repeat`. The latter
+    # expands into a typed_vcat-heavy trace for Reactant when this function is
+    # called inside a compiled emulator → HMCode pipeline.
+    input = vcat(reshape(z, 1, :),
+                 reshape(preprocessed_input, :, 1) .* ones(eltype(z), 1, length(z)))
     norm_input = maximin(input, emu.InMinMax)
-    output = Array(run_emulator(norm_input, emu.TrainedEmulator))
+    output = run_emulator(norm_input, emu.TrainedEmulator)
     denorm_output = inv_maximin(output, emu.OutMinMax)
     reconstructed_output = reconstruct(denorm_output, emu.Compression)
     return emu.Postprocessing(input_params, reconstructed_output, D, emu)
 end
 
-function get_Pk(input_params, z::AbstractVector, emu::MapseEmulator)
+function get_Pk(input_params, z::AbstractVector, emu::TransferFunctionEmulator)
     return get_Pk(input_params, z, fill(nothing, length(z)), emu)
-end
-
-"""
-    PkEmulator(LinearPmm::MapseEmulator, LinearPcb::MapseEmulator, Boost::MapseEmulator)
-
-Master emulator struct that combines linear matter, linear c+b, and non-linear boost emulators.
-"""
-@kwdef mutable struct PkEmulator <: AbstractPkEmulators
-    LinearPmm::MapseEmulator
-    LinearPcb::MapseEmulator
-    Boost::MapseEmulator
-end
-
-Adapt.@adapt_structure PkEmulator
-
-"""
-    get_Pk(input_params, z, D, PkEmu::PkEmulator)
-Computes the final non-linear matter power spectrum.
-Returns ``P_{mm, lin}(k, z) \times Boost(k, z)``.
-"""
-function get_Pk(input_params, z, D, PkEmu::PkEmulator)
-    lin_pmm = get_Pk(input_params, z, D, PkEmu.LinearPmm)
-    boost = get_Pk(input_params, z, D, PkEmu.Boost)
-    lin_pmm_on_boost_grid = _interpolate_pk_to_grid(get_kgrid(PkEmu.LinearPmm), lin_pmm,
-                                                     get_kgrid(PkEmu.Boost))
-    return lin_pmm_on_boost_grid .* boost
-end
-
-function get_linear_Pmm(input_params, z, D, PkEmu::PkEmulator)
-    return get_Pk(input_params, z, D, PkEmu.LinearPmm)
-end
-
-function get_linear_Pkcb(input_params, z, D, PkEmu::PkEmulator)
-    return get_Pk(input_params, z, D, PkEmu.LinearPcb)
 end
 
 """
@@ -199,10 +154,6 @@ Return the k-grid the emulator was trained on.
 """
 function get_kgrid(Pkemu::AbstractPkEmulators)
     return Pkemu.kgrid
-end
-
-function get_kgrid(PkEmu::PkEmulator)
-    return get_kgrid(PkEmu.Boost)
 end
 
 """
@@ -216,16 +167,6 @@ function get_emulator_description(Pkemu::AbstractPkEmulators)
     else
         @warn "No emulator description found!"
     end
-    return nothing
-end
-
-function get_emulator_description(PkEmu::PkEmulator)
-    println("Linear total-matter emulator:")
-    get_emulator_description(PkEmu.LinearPmm)
-    println("Linear cold+baryon emulator:")
-    get_emulator_description(PkEmu.LinearPcb)
-    println("Nonlinear boost emulator:")
-    get_emulator_description(PkEmu.Boost)
     return nothing
 end
 
@@ -323,51 +264,6 @@ function _validate_component_shapes(path::String, k, inminmax, outminmax,
     return nothing
 end
 
-function _interpolate_vector_to_grid(x::AbstractVector, y::AbstractVector, xnew::AbstractVector)
-    length(x) == length(y) || throw(DimensionMismatch(
-        "interpolation input grid has length $(length(x)) but values have length $(length(y))."
-    ))
-    all(diff(x) .> 0) || throw(ArgumentError("interpolation input grid must be strictly increasing."))
-    all(diff(xnew) .> 0) || throw(ArgumentError("interpolation output grid must be strictly increasing."))
-    first(xnew) >= first(x) && last(xnew) <= last(x) || throw(ArgumentError(
-        "cannot interpolate from k range [$(first(x)), $(last(x))] to [$(first(xnew)), $(last(xnew))]."
-    ))
-
-    out = similar(y, promote_type(eltype(x), eltype(y), eltype(xnew)), length(xnew))
-    for (i, xi) in pairs(xnew)
-        j = searchsortedlast(x, xi)
-        if j == 0
-            out[i] = y[begin]
-        elseif j >= length(x)
-            out[i] = y[end]
-        elseif x[j] == xi
-            out[i] = y[j]
-        else
-            weight = (xi - x[j]) / (x[j + 1] - x[j])
-            out[i] = (one(weight) - weight) * y[j] + weight * y[j + 1]
-        end
-    end
-    return out
-end
-
-function _interpolate_pk_to_grid(x::AbstractVector, y::AbstractVector, xnew::AbstractVector)
-    return length(x) == length(xnew) && all(x .== xnew) ? y : _interpolate_vector_to_grid(x, y, xnew)
-end
-
-function _interpolate_pk_to_grid(x::AbstractVector, y::AbstractMatrix, xnew::AbstractVector)
-    if length(x) == length(xnew) && all(x .== xnew)
-        return y
-    end
-    size(y, 1) == length(x) || throw(DimensionMismatch(
-        "interpolation input grid has length $(length(x)) but matrix has $(size(y, 1)) rows."
-    ))
-    out = similar(y, promote_type(eltype(x), eltype(y), eltype(xnew)), length(xnew), size(y, 2))
-    for col in axes(y, 2)
-        out[:, col] = _interpolate_vector_to_grid(x, view(y, :, col), xnew)
-    end
-    return out
-end
-
 function _load_preset(preset::Nothing)
     return NamedTuple()
 end
@@ -387,28 +283,12 @@ function _preset_value(preset::NamedTuple, key::Symbol, fallback = nothing)
     return haskey(preset, key) ? getfield(preset, key) : fallback
 end
 
-function _component_function_name(component_name, shared_name, preset::NamedTuple,
-    component_key::Symbol, shared_key::Symbol)
-
-    if !isnothing(component_name)
-        return component_name
-    elseif !isnothing(shared_name)
-        return shared_name
-    else
-        return _preset_value(preset, component_key, _preset_value(preset, shared_key, nothing))
-    end
-end
-
-"""
-    load_component_emulator(path::String; emu = LuxEmulator, ...)
-Load a single MapseEmulator component from a directory.
-"""
-function load_component_emulator(path::String; emu = LuxEmulator,
+function _load_single_emulator(path::String; emu = LuxEmulator,
     k_file = "k.npy", weights_file = "weights.npy", inminmax_file = "inminmax.npy",
     outminmax_file = "outminmax.npy", nn_setup_file = "nn_setup.json",
     preprocessing_file = "preprocessing.jl", postprocessing_file = "postprocessing.jl",
     pca_mean_file = "pca_mean.npy", pca_basis_file = "pca_projection.npy",
-    preprocessing_name = nothing, postprocessing_name = nothing)
+    preprocessing_name = nothing, postprocessing_name = nothing, preset = nothing)
 
     NN_dict = parsefile(joinpath(path, nn_setup_file))
     if !haskey(NN_dict, "emulator_description")
@@ -424,7 +304,11 @@ function load_component_emulator(path::String; emu = LuxEmulator,
 
     _validate_component_shapes(path, k, inminmax, outminmax, compression, NN_dict)
 
-    return Mapse.MapseEmulator(
+    load_preset = _load_preset(preset)
+    preprocessing_name = isnothing(preprocessing_name) ? _preset_value(load_preset, :preprocessing_name, nothing) : preprocessing_name
+    postprocessing_name = isnothing(postprocessing_name) ? _preset_value(load_preset, :postprocessing_name, nothing) : postprocessing_name
+
+    return Mapse.TransferFunctionEmulator(
         TrainedEmulator = trained_emu,
         kgrid = k,
         InMinMax = inminmax,
@@ -438,60 +322,31 @@ function load_component_emulator(path::String; emu = LuxEmulator,
 end
 
 """
-    load_emulator(path::String; emu = LuxEmulator, ...)
-Load the master PkEmulator suite from a directory containing component subfolders.
+    load_emulator(path::AbstractString; kwargs...)
+
+Load a single `TransferFunctionEmulator` component from a directory containing `nn_setup.json`.
+If a composite emulator directory is passed, throws an `ArgumentError`.
 """
-function load_emulator(path::String;
-    emu = LuxEmulator,
-    pmm_folder = "Pk_lin_mm/", pcb_folder = "Pk_lin_cb/", boost_folder = "Boost/",
-    preset = nothing,
-    linear_preprocessing_name = nothing, linear_postprocessing_name = nothing,
-    pmm_preprocessing_name = nothing, pmm_postprocessing_name = nothing,
-    pcb_preprocessing_name = nothing, pcb_postprocessing_name = nothing,
-    boost_preprocessing_name = nothing, boost_postprocessing_name = nothing)
+function load_emulator(path::AbstractString; kwargs...)
+    path_str = String(path)
+    has_single_setup = isfile(joinpath(path_str, "nn_setup.json"))
 
-    load_preset = _load_preset(preset)
-
-    pmm_preprocessing_name = _component_function_name(pmm_preprocessing_name, linear_preprocessing_name,
-        load_preset, :pmm_preprocessing_name, :linear_preprocessing_name)
-    pmm_postprocessing_name = _component_function_name(pmm_postprocessing_name, linear_postprocessing_name,
-        load_preset, :pmm_postprocessing_name, :linear_postprocessing_name)
-    pcb_preprocessing_name = _component_function_name(pcb_preprocessing_name, linear_preprocessing_name,
-        load_preset, :pcb_preprocessing_name, :linear_preprocessing_name)
-    pcb_postprocessing_name = _component_function_name(pcb_postprocessing_name, linear_postprocessing_name,
-        load_preset, :pcb_postprocessing_name, :linear_postprocessing_name)
-    boost_preprocessing_name = _component_function_name(boost_preprocessing_name, nothing,
-        load_preset, :boost_preprocessing_name, :boost_preprocessing_name)
-    boost_postprocessing_name = _component_function_name(boost_postprocessing_name, nothing,
-        load_preset, :boost_postprocessing_name, :boost_postprocessing_name)
-
-    pmm = load_component_emulator(joinpath(path, pmm_folder); emu=emu,
-        preprocessing_name = pmm_preprocessing_name,
-        postprocessing_name = pmm_postprocessing_name)
-    pcb = load_component_emulator(joinpath(path, pcb_folder); emu=emu,
-        preprocessing_name = pcb_preprocessing_name,
-        postprocessing_name = pcb_postprocessing_name)
-    boost = load_component_emulator(joinpath(path, boost_folder); emu=emu,
-        preprocessing_name = boost_preprocessing_name,
-        postprocessing_name = boost_postprocessing_name)
-
-    return PkEmulator(LinearPmm=pmm, LinearPcb=pcb, Boost=boost)
-end
-
-function _artifact_emulator_root(path::AbstractString)
-    if isdir(joinpath(path, "Pk_lin_mm")) && isdir(joinpath(path, "Pk_lin_cb")) && isdir(joinpath(path, "Boost"))
-        return String(path)
-    end
-
-    subdirs = filter(isdir, readdir(path; join=true))
-    if length(subdirs) == 1
-        candidate = subdirs[1]
-        if isdir(joinpath(candidate, "Pk_lin_mm")) && isdir(joinpath(candidate, "Pk_lin_cb")) && isdir(joinpath(candidate, "Boost"))
-            return candidate
+    if !has_single_setup
+        has_subfolders = isdir(joinpath(path_str, "Pk_lin_mm")) || isdir(joinpath(path_str, "Boost"))
+        if has_subfolders
+            throw(ArgumentError(
+                "The directory at '$path_str' appears to be a composite emulator bundle " *
+                "rather than a single component directory. " *
+                "To load a single component, pass the path to the subfolder directly " *
+                "(e.g. 'load_emulator(joinpath(path, \"Pk_lin_mm\"))')."
+            ))
         end
+        throw(ArgumentError(
+            "No 'nn_setup.json' found in '$path_str'. Make sure you are passing the path to a single component emulator directory."
+        ))
     end
 
-    return String(path)
+    return _load_single_emulator(path_str; kwargs...)
 end
 
 """
@@ -504,20 +359,14 @@ function artifact_path(artifact_name::AbstractString = DEFAULT_EMULATOR_ARTIFACT
     artifacts_toml::AbstractString = ARTIFACTS_TOML)
 
     installed = Pkg.Artifacts.ensure_artifact_installed(String(artifact_name), String(artifacts_toml))
-    return installed isa AbstractString ? installed : Pkg.Artifacts.artifact_path(installed)
-end
-
-"""
-    load_emulator_from_artifact([artifact_name]; kwargs...)
-
-Load a `PkEmulator` from a trained-emulator artifact declared in
-`Artifacts.toml`. Keyword arguments are forwarded to `load_emulator`.
-"""
-function load_emulator_from_artifact(artifact_name::AbstractString = DEFAULT_EMULATOR_ARTIFACT;
-    artifacts_toml::AbstractString = ARTIFACTS_TOML, kwargs...)
-
-    path = _artifact_emulator_root(artifact_path(artifact_name; artifacts_toml))
-    return load_emulator(path; kwargs...)
+    path = installed isa AbstractString ? installed : Pkg.Artifacts.artifact_path(installed)
+    if isdir(path) && !isfile(joinpath(path, "nn_setup.json"))
+        subdirs = filter(isdir, readdir(path; join=true))
+        if length(subdirs) == 1
+            return subdirs[1]
+        end
+    end
+    return path
 end
 
 """

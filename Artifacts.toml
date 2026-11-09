@@ -1,6 +1,6 @@
 [mnuw0wacdm_class]
-git-tree-sha1 = "c1a93f08faafd81f6c62ac3ee97bb9fe37f8cf2e"
+git-tree-sha1 = "38a05969d61632358bf4981957f397e45f88107f"
 
     [[mnuw0wacdm_class.download]]
-    url = "https://zenodo.org/records/20646263/files/trained_mapse_mnuw0wacdm_sym_ratio_pca_1em6_250000.tar.xz?download=1"
-    sha256 = "1624999b2ae943a8820927cac1eafede033f6b77b3c166ce88a6cf109361c594"
+    url = "https://zenodo.org/records/21328528/files/trained_mapse_mnuw0wacdm_sym_ratio_pca_1em6_250000.tar.xz?download=1"
+    sha256 = "98026354432f50e450a2294a5ad3d89b9cd40746d8b52208495d4d25f4ecbd33"

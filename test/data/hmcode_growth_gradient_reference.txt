@@ -1,0 +1,21 @@
+# Native HMCode growth numerical sensitivity reference, Narval job 8760524.
+# Generated 2026-11-08 with Julia 1.12.5, OrdinaryDiffEqTsit5, Float64.
+# Same growth equation, initial condition and spline as get_growth_interpolator;
+# this is a converged numerical reference, not an independent physics model.
+# ODE: Tsit5, reltol=abstol=1e-13; a_init=1e-4; 129 uniform spline nodes to a=1.
+# Observable: g(0.1)+g(0.5)+g(1.0), cubic B-spline with Line(OnGrid()) boundaries.
+# Cosmology: Omega_m=0.3 Omega_b=0.05 h=0.6736 n_s=0.96 sigma_8=0.8
+#            w0=-1 wa=0 Omega_nu=0.001 Omega_k=0.
+# Finite differences: prepared DI AutoFiniteDiff, central, relstep=0,
+# absstep=1e-4 and 3e-5. Tight AD is included as a separate cross-check.
+# Convergence checked against ODE tolerances 1e-8 and 1e-11, and six FD steps.
+# At production tolerance 1e-8, default-step FD for Omega_k is -1.18202182162646;
+# production AD is -1.1806289849646463 and agrees with the converged references.
+# Reproduction script: test/reference/growth_sensitivity.jl (see test/README.md).
+# Original evidence: growth-reference-8760524.log in the validation archive.
+# LCDM(0/1) field FD_step_1e-4 FD_step_3e-5 AD_tolerance_1e-13
+0 Omega_m 0.7015019751710483 0.7015019506062536 0.7015019481669847
+0 w0 -0.2702991145331346 -0.2702991120780614 -0.2702991118159732
+0 wa -0.09018573858265988 -0.09018573818112922 -0.09018573810142325
+0 Omega_k -1.180629025292479 -1.1806290089455551 -1.1806290161234319
+1 Omega_m 0.7015019751710483 0.7015019506062536 0.7015019481669847
